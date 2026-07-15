@@ -20,6 +20,20 @@ function propY(heightStep) {
   return heightStep * HEIGHT_UNIT;
 }
 
+function cellKey(col, row) {
+  return `${col},${row}`;
+}
+
+function getCellStackBase(col, row) {
+  const props = (cellIndex.get(cellKey(col, row)) || []).filter((entity) => !entity.ground);
+  if (props.length === 0) return 0;
+  return Math.max(...props.map((entity) => entity.heightStep ?? 0)) + 1;
+}
+
+function getPendingStackHeight(col, row) {
+  return getCellStackBase(col, row) + pendingHeight;
+}
+
 const canvas = document.getElementById('scene');
 const paletteToolRow = document.getElementById('palette-tool-row');
 const paletteCategories = document.getElementById('palette-categories');
@@ -97,7 +111,7 @@ const objectsById = new Map();
 function rebuildIndex() {
   cellIndex.clear();
   for (const entity of map.entities) {
-    const key = `${entity.col},${entity.row}`;
+    const key = cellKey(entity.col, entity.row);
     if (!cellIndex.has(key)) cellIndex.set(key, []);
     cellIndex.get(key).push(entity);
   }
@@ -161,7 +175,8 @@ function updateBrushStatus() {
     brushDetailEl.textContent = '';
   } else {
     brushNameEl.textContent = currentBrush;
-    brushDetailEl.textContent = `rot ${pendingRotation * 90}° · height ${(pendingHeight * HEIGHT_UNIT).toFixed(1)}`;
+    const offset = pendingHeight === 0 ? 'auto-stack' : `auto-stack ${pendingHeight > 0 ? '+' : ''}${pendingHeight}`;
+    brushDetailEl.textContent = `rot ${pendingRotation * 90}° · ${offset}`;
   }
 }
 
@@ -237,7 +252,8 @@ function syncGhostTransform() {
   }
   const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
   ghostObject.visible = true;
-  ghostObject.position.set(x, isGroundModel(currentBrush) ? ghostGroundY : propY(pendingHeight), z);
+  const y = isGroundModel(currentBrush) ? ghostGroundY : propY(getPendingStackHeight(hoverCell.col, hoverCell.row));
+  ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
 }
 
@@ -319,17 +335,24 @@ function placeAtHover() {
   const { col, row } = hoverCell;
   const ground = isGroundModel(currentBrush);
   if (ground) {
-    const existingGround = (cellIndex.get(`${col},${row}`) || []).find((e) => e.ground);
+    const existingGround = (cellIndex.get(cellKey(col, row)) || []).find((e) => e.ground);
     if (existingGround) removeEntity(existingGround.id);
     addEntity({ name: currentBrush, ground: true, col, row, rotationStep: pendingRotation, heightStep: 0 });
   } else {
-    addEntity({ name: currentBrush, ground: false, col, row, rotationStep: pendingRotation, heightStep: pendingHeight });
+    addEntity({
+      name: currentBrush,
+      ground: false,
+      col,
+      row,
+      rotationStep: pendingRotation,
+      heightStep: getPendingStackHeight(col, row),
+    });
   }
 }
 
 function eraseAtHover() {
   if (!hoverCell) return;
-  const entities = cellIndex.get(`${hoverCell.col},${hoverCell.row}`) || [];
+  const entities = cellIndex.get(cellKey(hoverCell.col, hoverCell.row)) || [];
   if (entities.length === 0) return;
   const props = entities.filter((e) => !e.ground);
   const target = props.length ? props[props.length - 1] : entities[entities.length - 1];
