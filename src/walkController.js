@@ -32,6 +32,7 @@ export function createWalkController({ camera, canvas }) {
   };
 
   let active = false;
+  let frozen = false;
   let target = null;
   let onExit = null;
   let config = { ...DEFAULTS };
@@ -205,6 +206,7 @@ export function createWalkController({ camera, canvas }) {
     slideCooldownTimer = 0;
     stance = 'stand';
     crouchWasHeld = false;
+    frozen = false;
     yaw = options.yaw ?? 0;
     pitch = 0;
     camera.rotation.order = 'YXZ';
@@ -232,8 +234,25 @@ export function createWalkController({ camera, canvas }) {
     onExit?.();
   }
 
+  // Teleport to a new spot (deathmatch respawns): same surface probe as
+  // enter(), but without touching input listeners or look angles.
+  function respawnAt(x, z) {
+    if (!active || !target) return;
+    const box = new THREE.Box3().setFromObject(target);
+    const scale = box.getSize(new THREE.Vector3()).length();
+    const startY = box.max.y + scale;
+    const hit = findSurface(x, z, startY, startY + standEyeHeight * 200);
+    groundY = hit?.point.y ?? box.max.y;
+    camera.position.set(x, groundY + eyeHeight, z);
+    velocity.set(0, 0, 0);
+    grounded = true;
+    coyoteTimer = config.coyoteTime;
+    jumpBufferTimer = 0;
+    slideTimer = 0;
+  }
+
   function update(delta) {
-    if (!active) return;
+    if (!active || frozen) return;
     delta = Math.min(delta, 0.05);
     euler.set(pitch, yaw, 0);
     camera.quaternion.setFromEuler(euler);
@@ -286,6 +305,11 @@ export function createWalkController({ camera, canvas }) {
     enter,
     exit,
     update,
+    respawnAt,
+    setFrozen(value) {
+      frozen = value;
+      if (value) keys.clear();
+    },
     get active() {
       return active;
     },

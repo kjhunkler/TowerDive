@@ -345,3 +345,179 @@
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
   pointer-events: none;
 }
+
+/* --- deathmatch HUD -------------------------------------------------------- */
+
+/* Explicit display values below would otherwise beat the UA rule for the
+   hidden attribute, which the HUD toggles. */
+#dm-announcer[hidden],
+#dm-feed[hidden],
+#dm-scoreboard[hidden],
+#dm-health[hidden],
+#dm-death[hidden],
+#dm-vignette[hidden] {
+  display: none;
+}
+
+#dm-announcer {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#dm-announcer.dm-announcer-big {
+  font-size: 3.4rem;
+}
+
+#dm-announcer.dm-announcer-pop {
+  animation: dm-pop 220ms ease-out;
+}
+
+@keyframes dm-pop {
+  0% { transform: translateX(-50%) scale(1.6); opacity: 0; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+
+#dm-feed {
+  position: absolute;
+  top: 34%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.dm-feed-line {
+  color: #e8ecf5;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.55);
+  animation: dm-feed-fade 4.5s forwards;
+}
+
+@keyframes dm-feed-fade {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+#dm-scoreboard {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  min-width: 190px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(232, 236, 245, 0.16);
+  background: rgba(13, 17, 28, 0.72);
+  color: #e8ecf5;
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.dm-scoreboard-header {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  margin-bottom: 6px;
+}
+
+.dm-scoreboard-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.dm-scoreboard-row span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+
+.dm-scoreboard-self {
+  color: #9fd0ff;
+  font-weight: 700;
+}
+
+#dm-health {
+  position: absolute;
+  left: max(24px, env(safe-area-inset-left, 0px));
+  bottom: max(22px, env(safe-area-inset-bottom, 0px));
+  width: 180px;
+  height: 26px;
+  border: 1px solid rgba(232, 236, 245, 0.25);
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.45);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#dm-health-fill {
+  position: absolute;
+  inset: 0;
+  background: rgba(125, 255, 168, 0.45);
+  transition: width 120ms ease;
+}
+
+#dm-health.dm-health-low #dm-health-fill {
+  background: rgba(255, 110, 110, 0.55);
+}
+
+#dm-health span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e8ecf5;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+#dm-death {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ff9d9d;
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#dm-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(255, 40, 40, 0.45) 100%);
+  opacity: 0;
+}
+
+#dm-vignette.dm-vignette-flash {
+  animation: dm-vignette 450ms ease-out;
+}
+
+@keyframes dm-vignette {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}

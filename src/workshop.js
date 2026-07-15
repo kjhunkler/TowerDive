@@ -10,6 +10,7 @@ import { TILE_SIZE } from './grid.js';
 import { applySkybox, SKYBOXES } from './skybox.js';
 import { getNetIntent, getPlayerName, createGameSession, announceInLobby, selfId } from './net.js';
 import { createRemotePlayers } from './remotePlayers.js';
+import { createDeathmatch } from './deathmatch.js';
 
 const ERASE = '__erase';
 
@@ -95,13 +96,17 @@ const mapGroup = new THREE.Group();
 scene.add(mapGroup);
 
 const walker = createWalkController({ camera: exploreCamera, canvas });
+// Remote avatars join this list once multiplayer initializes, making other
+// players shootable.
+const weaponTargets = [mapGroup];
 const weapons = createWeaponController({
   camera: exploreCamera,
   canvas,
   scene,
-  targets: [mapGroup],
-  onShot: (from, to, hit) => {
+  targets: weaponTargets,
+  onShot: (from, to, hit, hitPeerId) => {
     net?.sendShot({ f: [from.x, from.y, from.z], t: [to.x, to.y, to.z], hit });
+    if (hitPeerId) dm?.reportHit(hitPeerId);
   },
 });
 
@@ -1114,10 +1119,12 @@ document.getElementById('action-clear').addEventListener('click', () => {
 // which camera renders.
 function exitExplore() {
   weapons.exit();
+  weapons.setFiringLocked(false);
   controls.enabled = true;
   exploreHint.hidden = true;
   exploreBtn.classList.remove('active');
   exploreBtn.textContent = '\u{1F6F8} Explore';
+  dm?.refreshHud();
 }
 
 exploreBtn.addEventListener('click', () => {
@@ -1139,6 +1146,7 @@ exploreBtn.addEventListener('click', () => {
   exploreHint.hidden = false;
   exploreBtn.classList.add('active');
   exploreBtn.textContent = '\u{1F6F8} exit explore';
+  dm?.refreshHud();
 });
 
 // --- multiplayer --------------------------------------------------------------
@@ -1146,6 +1154,7 @@ exploreBtn.addEventListener('click', () => {
 let net = null;
 let lobby = null;
 let remotePlayers = null;
+let dm = null;
 let mapSynced = !isJoiner; // joiners wait for the host's map before edits count
 const sessionStartedAt = Date.now();
 
@@ -1299,12 +1308,17 @@ if (netEnabled) {
       },
       onState(state, peerId) {
         remotePlayers.pushState(peerId, state);
+        dm?.setPeerMode(peerId, state.m === 'x' ? 'x' : 'e');
       },
       onShot(shot) {
         remotePlayers.showShot(shot);
       },
+      onDm(event, peerId) {
+        dm?.handleRemote(event, peerId);
+      },
       onPeerLeft(peerId) {
         remotePlayers.removePeer(peerId);
+        dm?.peerLeft(peerId);
       },
       onPeersChanged() {
         for (const [peerId, info] of net.peers) {
@@ -1315,6 +1329,26 @@ if (netEnabled) {
       },
     },
   });
+
+  dm = createDeathmatch({
+    selfId,
+    send: (event) => net.sendDm(event),
+    getSelfName: () => playerName,
+    getPeerName: (id) => net.peerName(id),
+    getPeerIds: () => [...net.peers.keys()],
+    isExploring: () => walker.active,
+    setDead(dead) {
+      walker.setFrozen(dead);
+      weapons.setFiringLocked(dead);
+    },
+    respawn() {
+      const col = Math.floor(Math.random() * map.width);
+      const row = Math.floor(Math.random() * map.depth);
+      const { x, z } = cellToWorld(col, row, map.width, map.depth, TILE_SIZE);
+      walker.respawnAt(x, z);
+    },
+  });
+  weaponTargets.push(remotePlayers.avatarsGroup);
 
   if (isHost) {
     lobby = announceInLobby(() => ({
@@ -1364,6 +1398,7 @@ function buildLocalState() {
 function netTick(delta) {
   if (!net) return;
   remotePlayers.update();
+  dm.update();
   stateSendTimer += delta;
   if (stateSendTimer < STATE_SEND_INTERVAL) return;
   stateSendTimer = stateSendTimer > STATE_SEND_INTERVAL * 2 ? 0 : stateSendTimer - STATE_SEND_INTERVAL;

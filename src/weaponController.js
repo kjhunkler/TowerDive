@@ -22,6 +22,7 @@ const WEAPON_DEFAULTS = {
 export function createWeaponController({ camera, canvas, scene, targets = [], onShot = null }) {
   const config = { ...WEAPON_DEFAULTS };
   let active = false;
+  let firingLocked = false;
   let model = null;
   let hud = null;
   let ammo = config.magazineSize;
@@ -167,8 +168,19 @@ export function createWeaponController({ camera, canvas, scene, targets = [], on
     }, 140);
   }
 
+  // The hit object may be any mesh inside a remote player's avatar group;
+  // the peer id lives on the group root.
+  function findHitPeerId(intersection) {
+    let object = intersection?.object;
+    while (object) {
+      if (object.userData.peerId) return object.userData.peerId;
+      object = object.parent;
+    }
+    return null;
+  }
+
   function fire() {
-    if (!active || fireCooldown > 0 || reloadTimer > 0) return;
+    if (!active || firingLocked || fireCooldown > 0 || reloadTimer > 0) return;
     if (ammo <= 0) {
       startReload();
       return;
@@ -183,7 +195,7 @@ export function createWeaponController({ camera, canvas, scene, targets = [], on
     const to = hits[0]?.point ?? raycaster.ray.at(config.range, new THREE.Vector3());
     spawnTracer(from, to);
     if (hits[0]) spawnImpact(hits[0].point);
-    onShot?.(from, to, Boolean(hits[0]));
+    onShot?.(from, to, Boolean(hits[0]), findHitPeerId(hits[0]));
 
     camera.rotation.x -= config.recoilKick;
     if (model) model.position.z += 0.035;
@@ -212,5 +224,14 @@ export function createWeaponController({ camera, canvas, scene, targets = [], on
     }
   }
 
-  return { enter, exit, update, get active() { return active; } };
+  return {
+    enter,
+    exit,
+    update,
+    setFiringLocked(value) {
+      firingLocked = value;
+      if (value) firing = false;
+    },
+    get active() { return active; },
+  };
 }

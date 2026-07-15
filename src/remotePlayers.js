@@ -59,12 +59,21 @@ function makeNameSprite(name, color) {
   );
   sprite.renderOrder = 20;
   sprite.scale.set(0.9, 0.225, 1);
+  // Name tags float above heads; shots that clip them shouldn't count as
+  // player hits.
+  sprite.raycast = () => {};
   return sprite;
 }
 
 export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
   const peers = new Map(); // peerId -> peer record
   const effects = [];
+
+  // All avatars live under one group so the weapon raycaster can treat
+  // "remote players" as a single target; each avatar root carries its
+  // peer id for hit attribution.
+  const avatarsGroup = new THREE.Group();
+  scene.add(avatarsGroup);
 
   function buildAvatar(color) {
     const group = new THREE.Group();
@@ -119,16 +128,17 @@ export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
     return peer;
   }
 
-  function ensureAvatar(peer) {
+  function ensureAvatar(peer, peerId) {
     if (peer.avatar) return;
     const { group, head } = buildAvatar(peer.color);
+    group.userData.peerId = peerId;
     peer.avatar = group;
     peer.head = head;
     peer.nameSprite = makeNameSprite(peer.name, peer.color);
     peer.nameSprite.position.y = REF_EYE * 1.55;
     group.add(peer.nameSprite);
     group.visible = false;
-    scene.add(group);
+    avatarsGroup.add(group);
   }
 
   function ensureCursor(peer) {
@@ -192,9 +202,17 @@ export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
   function removePeer(peerId) {
     const peer = peers.get(peerId);
     if (!peer) return;
-    if (peer.avatar) scene.remove(peer.avatar);
+    if (peer.avatar) avatarsGroup.remove(peer.avatar);
     if (peer.cursor) scene.remove(peer.cursor);
     peers.delete(peerId);
+  }
+
+  // A hidden avatar must not eat bullets: three.js raycasts don't skip
+  // invisible objects, so park it far below the map as well.
+  function hideAvatar(peer) {
+    if (!peer.avatar) return;
+    peer.avatar.visible = false;
+    peer.avatar.position.y = -1000;
   }
 
   // Sampled remote pose at (now - interpolation delay).
@@ -239,18 +257,18 @@ export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
 
   function update() {
     const now = performance.now();
-    for (const peer of peers.values()) {
+    for (const [peerId, peer] of peers) {
       const latest = peer.buffer[peer.buffer.length - 1];
       const stale = !latest || now - latest.t > STALE_HIDE_MS;
       if (stale) {
-        if (peer.avatar) peer.avatar.visible = false;
+        hideAvatar(peer);
         if (peer.cursor) peer.cursor.visible = false;
         continue;
       }
       const pose = samplePose(peer.buffer, now);
 
       if (pose.mode === 'explore') {
-        ensureAvatar(peer);
+        ensureAvatar(peer, peerId);
         if (peer.cursor) peer.cursor.visible = false;
         peer.avatar.visible = true;
         // State carries the eye position; the avatar's origin is the feet.
@@ -263,7 +281,7 @@ export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
         peer.avatar.scale.set(1, squash, 1);
         peer.head.rotation.x = pose.pitch;
       } else {
-        if (peer.avatar) peer.avatar.visible = false;
+        hideAvatar(peer);
         if (pose.cell) {
           ensureCursor(peer);
           const { x, z } = cellToWorld(pose.cell[0], pose.cell[1]);
@@ -313,5 +331,5 @@ export function createRemotePlayers({ scene, cellToWorld, tileSize = 1 }) {
     effects.length = 0;
   }
 
-  return { setPeerName, pushState, removePeer, showShot, update, dispose };
+  return { setPeerName, pushState, removePeer, showShot, update, dispose, avatarsGroup };
 }

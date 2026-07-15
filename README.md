@@ -21,6 +21,14 @@ only for signaling and room discovery — GitHub Pages stays the only host.
   players render ~120 ms in the past via snapshot interpolation (with brief
   extrapolation on packet loss), so motion stays smooth on real-world
   connections. Shots replicate as tracer/impact events.
+- **Deathmatch** — when every player in a session is in explore mode, a
+  countdown starts and a deathmatch begins (and restarts the same way after
+  it ends): first to 10 kills wins a round, best of 3 rounds wins the match,
+  with an announcer, kill feed, live scoreboard, health bar, and 3-second
+  respawns. Hit detection is shooter-side (you hit what you see — the P2P
+  equivalent of lag compensation), health is victim-authoritative, and match
+  flow is driven by a deterministic referee peer (lowest peer id) so the
+  role survives players leaving mid-match.
 
 ## Art assets
 

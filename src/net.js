@@ -145,6 +145,7 @@ export function announceInLobby(getInfo) {
 //   state — player snapshots (position/look/stance) at ~20 Hz for netcode
 //   shot  — fire events so everyone sees tracers/impacts
 //   hello — name introduction, sent to each newly-connected peer
+//   dm    — deathmatch events: hits, deaths, and referee match control
 export function createGameSession({ hostId, isHost, playerName, handlers = {} }) {
   const room = joinRoom({ appId: APP_ID }, `game-${hostId}`);
   const mapAction = room.makeAction('map');
@@ -152,6 +153,7 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
   const stateAction = room.makeAction('state');
   const shotAction = room.makeAction('shot');
   const helloAction = room.makeAction('hello');
+  const dmAction = room.makeAction('dm');
 
   const peers = new Map(); // peerId -> { name }
 
@@ -177,6 +179,7 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
   opAction.onMessage = (op, { peerId }) => handlers.onOp?.(op, peerId);
   stateAction.onMessage = (state, { peerId }) => handlers.onState?.(state, peerId);
   shotAction.onMessage = (shot, { peerId }) => handlers.onShot?.(shot, peerId);
+  dmAction.onMessage = (event, { peerId }) => handlers.onDm?.(event, peerId);
 
   return {
     selfId,
@@ -188,6 +191,7 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
     sendOp: (op) => opAction.send(op).catch(() => {}),
     sendState: (state) => stateAction.send(state).catch(() => {}),
     sendShot: (shot) => shotAction.send(shot).catch(() => {}),
+    sendDm: (event) => dmAction.send(event).catch(() => {}),
     leave: () => room.leave(),
   };
 }
