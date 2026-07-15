@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { loadModel, setMaxAnisotropy } from './assets.js';
 import { MODEL_NAMES } from './modelList.js';
 import { createWalkController } from './walkController.js';
+import { createWeaponController } from './weaponController.js';
 
 const canvas = document.getElementById('scene');
 const nameEl = document.getElementById('viewer-name');
@@ -44,6 +45,8 @@ fillLight.position.set(-5, 3, -4);
 scene.add(fillLight);
 
 const walker = createWalkController({ camera, canvas });
+const weaponTargets = [];
+const weapons = createWeaponController({ camera, canvas, scene, targets: weaponTargets });
 
 let currentObject = null;
 let index = 0;
@@ -104,6 +107,7 @@ async function showModel(newIndex) {
   });
   scene.add(instance);
   currentObject = instance;
+  weaponTargets.splice(0, weaponTargets.length, instance);
   frameObject(instance);
 }
 
@@ -140,6 +144,7 @@ function setWalkUI(isWalking) {
 }
 
 function exitWalk() {
+  weapons.exit();
   controls.enabled = true;
   controls.autoRotate = true;
   frameObject(currentObject);
@@ -155,6 +160,7 @@ walkBtn.addEventListener('click', () => {
   controls.enabled = false;
   controls.autoRotate = false;
   walker.enter(currentObject, exitWalk);
+  weapons.enter();
   setWalkUI(true);
 });
 
@@ -167,6 +173,7 @@ function animate() {
   const delta = clock.getDelta();
   if (walker.active) {
     walker.update(delta);
+    weapons.update(delta);
   } else {
     controls.update();
   }
