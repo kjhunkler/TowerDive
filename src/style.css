@@ -41,6 +41,13 @@ html, body {
   letter-spacing: 0.02em;
 }
 
+#hud-version {
+  font-size: 0.7rem;
+  font-weight: 400;
+  opacity: 0.6;
+  vertical-align: middle;
+}
+
 #hud-hint {
   font-size: 0.75rem;
   opacity: 0.7;

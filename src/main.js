@@ -11,6 +11,8 @@ const TILE_MODEL = {
   end: 'tile-end',
 };
 
+document.getElementById('hud-version').textContent = `v${__APP_VERSION__}`;
+
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
