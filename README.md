@@ -25,3 +25,16 @@ npm run preview
 The app is installable as a PWA (manifest + service worker via `vite-plugin-pwa`).
 Replace `public/icons/icon-192.png` and `public/icons/icon-512.png` with real
 artwork before shipping — they're solid-color placeholders for now.
+
+## Deployment (GitHub Pages)
+
+Hosted at `https://<owner>.github.io/TowerDive/`. `.github/workflows/deploy.yml`
+builds with Vite and deploys to Pages on every push to `main`.
+
+One-time setup: in the repo's **Settings → Pages**, set **Source** to
+**GitHub Actions**. After that, pushes to `main` deploy automatically.
+
+`vite.config.js` sets `base: '/TowerDive/'` to match the project-page URL — if
+the repo is ever renamed, or moved to a custom domain / user root page
+(`<owner>.github.io`), update `base` (and the PWA `start_url`/`scope`, which
+derive from it) to match.

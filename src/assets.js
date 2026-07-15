@@ -5,7 +5,9 @@ const cache = new Map();
 
 export function loadModel(name) {
   if (cache.has(name)) return cache.get(name);
-  const promise = loader.loadAsync(`/assets/models/${name}.glb`).then((gltf) => gltf.scene);
+  const promise = loader
+    .loadAsync(`${import.meta.env.BASE_URL}assets/models/${name}.glb`)
+    .then((gltf) => gltf.scene);
   cache.set(name, promise);
   return promise;
 }

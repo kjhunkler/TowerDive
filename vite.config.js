@@ -4,7 +4,11 @@ import { readFileSync } from 'node:fs';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url)));
 
+// GitHub Pages project site: served from https://<user>.github.io/TowerDive/
+const base = '/TowerDive/';
+
 export default defineConfig({
+  base,
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
@@ -19,7 +23,8 @@ export default defineConfig({
         theme_color: '#1a1f2e',
         background_color: '#1a1f2e',
         display: 'standalone',
-        start_url: '/',
+        start_url: base,
+        scope: base,
         version,
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
