@@ -119,6 +119,12 @@ function rebuildIndex() {
   }
 }
 
+function getVerticalBounds(bounds, mirrorY = false) {
+  return mirrorY
+    ? { minY: -bounds.maxY, maxY: -bounds.minY, height: bounds.height }
+    : bounds;
+}
+
 async function layoutCellStack(col, row) {
   const key = cellKey(col, row);
   const props = (cellIndex.get(key) || []).filter((entity) => !entity.ground);
@@ -126,14 +132,15 @@ async function layoutCellStack(col, row) {
   let top = 0;
   let legacyMaxStep = -1;
   props.forEach((entity, index) => {
+    const verticalBounds = getVerticalBounds(bounds[index], entity.mirrorY);
     const savedStep = entity.heightStep ?? legacyMaxStep + 1;
     if (entity.stackOffset === undefined) {
       entity.stackOffset = savedStep - (legacyMaxStep + 1);
     }
     legacyMaxStep = Math.max(legacyMaxStep, savedStep);
-    const baseY = top + entity.stackOffset * bounds[index].height;
-    entity.stackY = baseY - bounds[index].minY;
-    top = Math.max(top, entity.stackY + bounds[index].maxY);
+    const baseY = top + entity.stackOffset * verticalBounds.height;
+    entity.stackY = baseY - verticalBounds.minY;
+    top = Math.max(top, entity.stackY + verticalBounds.maxY);
     const object = objectsById.get(entity.id);
     if (object) object.position.y = entity.stackY;
   });
@@ -154,10 +161,16 @@ function getPendingStackY(col, row, modelHeight) {
 
 async function renderEntity(entity, generation = renderGeneration) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
-  const y = entity.ground ? -(await getModelBounds(entity.name)).maxY : (entity.stackY ?? 0);
+  const bounds = entity.ground
+    ? getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY)
+    : null;
+  const y = entity.ground ? -bounds.maxY : (entity.stackY ?? 0);
   const object = await spawnModel(entity.name, {
     position: { x, y, z },
     rotationY: entity.rotationStep * (Math.PI / 2),
+    mirrorX: entity.mirrorX,
+    mirrorY: entity.mirrorY,
+    mirrorZ: entity.mirrorZ,
   });
   if (generation !== renderGeneration || !map.entities.includes(entity)) return;
   object.userData.entityId = entity.id;
@@ -244,6 +257,7 @@ async function undoLastEdit() {
 let currentBrush = null;
 let pendingRotation = 0;
 let pendingHeight = 0;
+let pendingMirrors = { x: false, y: false, z: false };
 let selectedEntityId = null;
 let moveEntityId = null;
 let copyMode = false;
@@ -272,12 +286,16 @@ function saveStarredNames() {
 
 function updateBrushStatus() {
   const selectedEntity = map.entities.find((entity) => entity.id === selectedEntityId);
+  const selectedMirrors = selectedEntity
+    ? ['X', 'Y', 'Z'].filter((axis) => selectedEntity[`mirror${axis}`])
+    : [];
+  const brushMirrors = ['X', 'Y', 'Z'].filter((axis) => pendingMirrors[axis.toLocaleLowerCase()]);
   if (moveEntityId !== null && selectedEntity) {
     brushNameEl.textContent = `move: ${selectedEntity.name}`;
     brushDetailEl.textContent = 'click destination · Esc cancel';
   } else if (!currentBrush && selectedEntity) {
     brushNameEl.textContent = `selected: ${selectedEntity.name}`;
-    brushDetailEl.textContent = 'Del delete · C copy · M move · [ ] height';
+    brushDetailEl.textContent = `Del delete · C copy · M move · [ ] height${selectedMirrors.length ? ` · mirror ${selectedMirrors.join('/')}` : ''}`;
   } else if (!currentBrush) {
     brushNameEl.textContent = 'no tool selected';
     brushDetailEl.textContent = '';
@@ -287,7 +305,7 @@ function updateBrushStatus() {
   } else {
     brushNameEl.textContent = currentBrush;
     const offset = pendingHeight === 0 ? 'auto-stack' : `auto-stack ${pendingHeight > 0 ? '+' : ''}${pendingHeight}`;
-    brushDetailEl.textContent = `${copyMode ? 'copy · ' : ''}rot ${pendingRotation * 90}° · ${offset}`;
+    brushDetailEl.textContent = `${copyMode ? 'copy · ' : ''}rot ${pendingRotation * 90}° · ${offset}${brushMirrors.length ? ` · mirror ${brushMirrors.join('/')}` : ''}`;
   }
 }
 
@@ -299,6 +317,7 @@ function selectBrush(name) {
   selectionOutline.visible = false;
   pendingRotation = 0;
   pendingHeight = 0;
+  pendingMirrors = { x: false, y: false, z: false };
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
   document.querySelectorAll('.quickbar-item.selected').forEach((el) => el.classList.remove('selected'));
   document.querySelectorAll(`[data-name="${CSS.escape(name)}"]`).forEach((el) => el.classList.add('selected'));
@@ -334,6 +353,11 @@ function copySelectedEntity() {
   if (!entity) return;
   selectBrush(entity.name);
   pendingRotation = entity.rotationStep ?? 0;
+  pendingMirrors = {
+    x: Boolean(entity.mirrorX),
+    y: Boolean(entity.mirrorY),
+    z: Boolean(entity.mirrorZ),
+  };
   copyMode = true;
   syncGhostTransform();
   updateBrushStatus();
@@ -591,11 +615,20 @@ function syncGhostTransform() {
   }
   const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
   ghostObject.visible = true;
+  const verticalBounds = getVerticalBounds(
+    { minY: ghostMinY, maxY: ghostMaxY, height: ghostHeight },
+    pendingMirrors.y
+  );
   const y = isGroundModel(currentBrush)
-    ? -ghostMaxY
-    : getPendingStackY(hoverCell.col, hoverCell.row, ghostHeight) - ghostMinY;
+    ? -verticalBounds.maxY
+    : getPendingStackY(hoverCell.col, hoverCell.row, ghostHeight) - verticalBounds.minY;
   ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
+  ghostObject.scale.set(
+    pendingMirrors.x ? -1 : 1,
+    pendingMirrors.y ? -1 : 1,
+    pendingMirrors.z ? -1 : 1
+  );
 }
 
 async function ensureGhost(name) {
@@ -718,7 +751,7 @@ function updateHover(clientX, clientY) {
 
 // --- placing / erasing ------------------------------------------------------
 
-async function placeEntity({ cell, brush, rotation, heightOffset }) {
+async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
   if (!cell || !brush || brush === ERASE) return;
   recordUndoState();
   const { col, row } = cell;
@@ -726,9 +759,20 @@ async function placeEntity({ cell, brush, rotation, heightOffset }) {
   if (ground) {
     const existingGround = (cellIndex.get(cellKey(col, row)) || []).find((e) => e.ground);
     if (existingGround) removeEntity(existingGround.id);
-    addEntity({ name: brush, ground: true, col, row, rotationStep: rotation, heightStep: 0 });
+    addEntity({
+      name: brush,
+      ground: true,
+      col,
+      row,
+      rotationStep: rotation,
+      heightStep: 0,
+      mirrorX: mirrors.x,
+      mirrorY: mirrors.y,
+      mirrorZ: mirrors.z,
+    });
   } else {
     const bounds = await getModelBounds(brush);
+    const verticalBounds = getVerticalBounds(bounds, mirrors.y);
     const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * bounds.height;
     addEntity({
       name: brush,
@@ -738,7 +782,10 @@ async function placeEntity({ cell, brush, rotation, heightOffset }) {
       rotationStep: rotation,
       heightStep: getCellStackBase(col, row) + heightOffset,
       stackOffset: heightOffset,
-      stackY: baseY - bounds.minY,
+      stackY: baseY - verticalBounds.minY,
+      mirrorX: mirrors.x,
+      mirrorY: mirrors.y,
+      mirrorZ: mirrors.z,
     });
     await layoutCellStack(col, row);
   }
@@ -827,6 +874,32 @@ async function adjustSelectedHeight(entityId, delta) {
   updateBrushStatus();
 }
 
+async function toggleSelectedMirror(entityId, axis) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity) return;
+  recordUndoState();
+  const property = `mirror${axis.toLocaleUpperCase()}`;
+  entity[property] = !entity[property];
+
+  const object = objectsById.get(entity.id);
+  if (object) object.scale[axis] *= -1;
+  if (entity.ground) {
+    const bounds = getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY);
+    if (object) object.position.y = -bounds.maxY;
+  } else {
+    await layoutCellStack(entity.col, entity.row);
+  }
+  mapRevision += 1;
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+function toggleBrushMirror(axis) {
+  pendingMirrors[axis] = !pendingMirrors[axis];
+  syncGhostTransform();
+  updateBrushStatus();
+}
+
 canvas.addEventListener('pointermove', (event) => {
   if (walker.active) return;
   updateHover(event.clientX, event.clientY);
@@ -850,6 +923,7 @@ canvas.addEventListener('click', (event) => {
       brush: currentBrush,
       rotation: pendingRotation,
       heightOffset: pendingHeight,
+      mirrors: { ...pendingMirrors },
     };
     enqueueMapEdit(() => placeEntity(request));
   }
@@ -866,6 +940,19 @@ window.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'z') {
     event.preventDefault();
     enqueueMapEdit(undoLastEdit);
+    return;
+  }
+  const mirrorAxis = event.shiftKey && ['x', 'y', 'z'].includes(event.key.toLocaleLowerCase())
+    ? event.key.toLocaleLowerCase()
+    : null;
+  if (mirrorAxis) {
+    event.preventDefault();
+    if (selectedEntityId !== null && !currentBrush) {
+      const entityId = selectedEntityId;
+      enqueueMapEdit(() => toggleSelectedMirror(entityId, mirrorAxis));
+    } else if (currentBrush && currentBrush !== ERASE) {
+      toggleBrushMirror(mirrorAxis);
+    }
     return;
   }
   if ((event.key === 'Delete' || event.key === 'Backspace') && selectedEntityId !== null) {

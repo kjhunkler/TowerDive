@@ -104,7 +104,10 @@ export async function getModelHeight(name) {
   return (await getModelBounds(name)).height;
 }
 
-export async function spawnModel(name, { position, rotationY = 0, scale = 1 } = {}) {
+export async function spawnModel(
+  name,
+  { position, rotationY = 0, scale = 1, mirrorX = false, mirrorY = false, mirrorZ = false } = {}
+) {
   const template = await loadModel(name);
   const instance = template.clone(true);
   instance.traverse((child) => {
@@ -115,6 +118,10 @@ export async function spawnModel(name, { position, rotationY = 0, scale = 1 } = 
   });
   if (position) instance.position.set(position.x, position.y ?? 0, position.z);
   instance.rotation.y = rotationY;
-  instance.scale.setScalar(scale);
+  instance.scale.set(
+    scale * (mirrorX ? -1 : 1),
+    scale * (mirrorY ? -1 : 1),
+    scale * (mirrorZ ? -1 : 1)
+  );
   return instance;
 }
