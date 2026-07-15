@@ -29,6 +29,21 @@
   opacity: 1;
 }
 
+#viewer-workshop-link {
+  pointer-events: auto;
+  color: #cdd6f4;
+  text-decoration: none;
+  font-size: 0.8rem;
+  opacity: 0.75;
+  position: absolute;
+  right: 16px;
+  top: 16px;
+}
+
+#viewer-workshop-link:hover {
+  opacity: 1;
+}
+
 #viewer-name {
   font-size: 1.3rem;
   font-weight: 700;

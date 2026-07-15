@@ -89,12 +89,10 @@ async function showModel(newIndex) {
   if (requestedIndex !== index) return; // a newer request superseded this one
 
   if (currentObject) {
+    // Don't dispose currentObject's geometry: clone(true) shares the
+    // BufferGeometry by reference with the cached template in assets.js,
+    // so disposing it here would break that model the next time it loads.
     scene.remove(currentObject);
-    currentObject.traverse((child) => {
-      if (child.isMesh) {
-        child.geometry.dispose();
-      }
-    });
   }
 
   const instance = template.clone(true);

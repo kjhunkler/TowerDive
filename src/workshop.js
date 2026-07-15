@@ -1,0 +1,434 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { spawnModel, setMaxAnisotropy } from './assets.js';
+import { buildCategories, isGroundModel } from './modelCategories.js';
+import { cellToWorld, worldToCell } from './gridMath.js';
+import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
+import { createWalkController } from './walkController.js';
+
+const ERASE = '__erase';
+// Matches tower.js's stacking step, so nudging height lines up the
+// separately-placed bottom/middle/top pieces of a tower correctly.
+const HEIGHT_UNIT = 0.9;
+
+const canvas = document.getElementById('scene');
+const paletteToolRow = document.getElementById('palette-tool-row');
+const paletteCategories = document.getElementById('palette-categories');
+const brushNameEl = document.getElementById('brush-status-name');
+const brushDetailEl = document.getElementById('brush-status-detail');
+const exploreHint = document.getElementById('explore-hint');
+const exploreBtn = document.getElementById('action-explore');
+const importInput = document.getElementById('action-import-input');
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1f2e);
+
+const ISO_ANGLE = Math.atan(1 / Math.sqrt(2));
+const camera = new THREE.OrthographicCamera();
+camera.near = -100;
+camera.far = 100;
+const CAMERA_DISTANCE = 30;
+camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE * Math.tan(ISO_ANGLE), CAMERA_DISTANCE);
+camera.lookAt(0, 0, 0);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+// Left button is reserved for placing/erasing; camera uses right-drag to
+// orbit and middle-drag to pan, matching common 3D editor conventions.
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
+controls.minZoom = 0.3;
+controls.maxZoom = 4;
+controls.minPolarAngle = Math.PI / 8;
+controls.maxPolarAngle = Math.PI / 2.1;
+
+const hemiLight = new THREE.HemisphereLight(0xbdd6ff, 0x2a2f3a, 1.8);
+scene.add(hemiLight);
+
+const sunLight = new THREE.DirectionalLight(0xfff2d9, 0.6);
+sunLight.position.set(8, 12, 6);
+sunLight.castShadow = true;
+scene.add(sunLight);
+
+const mapGroup = new THREE.Group();
+scene.add(mapGroup);
+
+const walker = createWalkController({ camera, canvas });
+
+// --- map data -----------------------------------------------------------
+
+let map = loadMap() || createEmptyMap(15, 15, 2);
+const TILE_SIZE = map.tileSize;
+let cellIndex = new Map();
+const objectsById = new Map();
+
+function rebuildIndex() {
+  cellIndex.clear();
+  for (const entity of map.entities) {
+    const key = `${entity.col},${entity.row}`;
+    if (!cellIndex.has(key)) cellIndex.set(key, []);
+    cellIndex.get(key).push(entity);
+  }
+}
+
+async function renderEntity(entity) {
+  const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
+  const object = await spawnModel(entity.name, {
+    position: { x, y: entity.heightStep * HEIGHT_UNIT, z },
+    rotationY: entity.rotationStep * (Math.PI / 2),
+  });
+  if (!map.entities.includes(entity)) return; // removed while loading
+  mapGroup.add(object);
+  objectsById.set(entity.id, object);
+}
+
+function removeEntityObject(id) {
+  const object = objectsById.get(id);
+  if (object) {
+    mapGroup.remove(object);
+    objectsById.delete(id);
+  }
+}
+
+async function loadEntireMap() {
+  mapGroup.clear();
+  objectsById.clear();
+  rebuildIndex();
+  await Promise.all(map.entities.map(renderEntity));
+}
+
+function addEntity(partial) {
+  const entity = { id: map.nextId++, rotationStep: 0, heightStep: 0, ...partial };
+  map.entities.push(entity);
+  rebuildIndex();
+  renderEntity(entity);
+  return entity;
+}
+
+function removeEntity(id) {
+  const idx = map.entities.findIndex((e) => e.id === id);
+  if (idx === -1) return;
+  map.entities.splice(idx, 1);
+  rebuildIndex();
+  removeEntityObject(id);
+}
+
+// --- palette --------------------------------------------------------------
+
+let currentBrush = null;
+let pendingRotation = 0;
+let pendingHeight = 0;
+
+function updateBrushStatus() {
+  if (!currentBrush) {
+    brushNameEl.textContent = 'no tool selected';
+    brushDetailEl.textContent = '';
+  } else if (currentBrush === ERASE) {
+    brushNameEl.textContent = 'erase';
+    brushDetailEl.textContent = '';
+  } else {
+    brushNameEl.textContent = currentBrush;
+    brushDetailEl.textContent = `rot ${pendingRotation * 90}° · height ${(pendingHeight * HEIGHT_UNIT).toFixed(1)}`;
+  }
+}
+
+function selectBrush(name) {
+  currentBrush = name;
+  pendingRotation = 0;
+  pendingHeight = 0;
+  document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
+  const el = document.querySelector(`.palette-item[data-name="${CSS.escape(name)}"]`);
+  el?.classList.add('selected');
+  updateGhost();
+  updateBrushStatus();
+}
+
+function deselectBrush() {
+  currentBrush = null;
+  document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
+  updateGhost();
+  updateBrushStatus();
+}
+
+const eraseBtn = paletteToolRow.querySelector('.palette-tool');
+eraseBtn.addEventListener('click', () => selectBrush(ERASE));
+
+for (const category of buildCategories()) {
+  const section = document.createElement('div');
+  section.className = 'palette-category';
+
+  const label = document.createElement('div');
+  label.className = 'palette-category-label';
+  label.textContent = category.label;
+  section.appendChild(label);
+
+  const grid = document.createElement('div');
+  grid.className = 'palette-grid';
+  for (const name of category.items) {
+    const btn = document.createElement('button');
+    btn.className = 'palette-item';
+    btn.dataset.name = name;
+    btn.textContent = name;
+    btn.addEventListener('click', () => selectBrush(name));
+    grid.appendChild(btn);
+  }
+  section.appendChild(grid);
+  paletteCategories.appendChild(section);
+}
+
+// --- ghost / cell cursor ---------------------------------------------------
+
+const cellCursor = new THREE.Mesh(
+  new THREE.PlaneGeometry(TILE_SIZE * 0.92, TILE_SIZE * 0.92),
+  new THREE.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.35 })
+);
+cellCursor.rotation.x = -Math.PI / 2;
+cellCursor.position.y = 0.02;
+cellCursor.visible = false;
+scene.add(cellCursor);
+
+let ghostObject = null;
+let ghostBrushName = null;
+
+// Keeps the ghost glued to the last known hover cell. Called both on
+// pointer move and right after an async model load resolves — without the
+// latter, a freshly-loaded ghost would sit at its default (0,0,0) origin
+// until the next mouse movement instead of snapping straight to the cursor.
+function syncGhostTransform() {
+  if (!ghostObject || ghostBrushName !== currentBrush) return;
+  if (!hoverCell) {
+    ghostObject.visible = false;
+    return;
+  }
+  const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
+  ghostObject.visible = true;
+  ghostObject.position.set(x, pendingHeight * HEIGHT_UNIT, z);
+  ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
+}
+
+async function ensureGhost(name) {
+  if (ghostBrushName === name) return;
+  if (ghostObject) {
+    scene.remove(ghostObject);
+    ghostObject = null;
+  }
+  ghostBrushName = name;
+  const object = await spawnModel(name, {});
+  if (ghostBrushName !== name) return; // brush changed again while loading
+  object.traverse((child) => {
+    if (child.isMesh) {
+      child.material = child.material.clone();
+      child.material.transparent = true;
+      child.material.opacity = 0.55;
+      child.castShadow = false;
+      child.receiveShadow = false;
+    }
+  });
+  ghostObject = object;
+  ghostObject.visible = false;
+  scene.add(object);
+  syncGhostTransform();
+}
+
+function updateGhost() {
+  if (!currentBrush || currentBrush === ERASE) {
+    if (ghostObject) ghostObject.visible = false;
+    return;
+  }
+  ensureGhost(currentBrush);
+}
+
+const raycaster = new THREE.Raycaster();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let hoverCell = null;
+
+function updateHover(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const point = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(groundPlane, point)) {
+    hoverCell = null;
+    cellCursor.visible = false;
+    syncGhostTransform();
+    return;
+  }
+
+  const { col, row } = worldToCell(point.x, point.z, map.width, map.depth, TILE_SIZE);
+  if (col < 0 || col >= map.width || row < 0 || row >= map.depth) {
+    hoverCell = null;
+    cellCursor.visible = false;
+    syncGhostTransform();
+    return;
+  }
+
+  hoverCell = { col, row };
+  const { x, z } = cellToWorld(col, row, map.width, map.depth, TILE_SIZE);
+  cellCursor.position.set(x, 0.02, z);
+  cellCursor.material.color.set(currentBrush === ERASE ? 0xff6666 : 0x88aaff);
+  cellCursor.visible = true;
+  syncGhostTransform();
+}
+
+// --- placing / erasing ------------------------------------------------------
+
+function placeAtHover() {
+  if (!hoverCell || !currentBrush || currentBrush === ERASE) return;
+  const { col, row } = hoverCell;
+  const ground = isGroundModel(currentBrush);
+  if (ground) {
+    const existingGround = (cellIndex.get(`${col},${row}`) || []).find((e) => e.ground);
+    if (existingGround) removeEntity(existingGround.id);
+    addEntity({ name: currentBrush, ground: true, col, row, rotationStep: pendingRotation, heightStep: 0 });
+  } else {
+    addEntity({ name: currentBrush, ground: false, col, row, rotationStep: pendingRotation, heightStep: pendingHeight });
+  }
+}
+
+function eraseAtHover() {
+  if (!hoverCell) return;
+  const entities = cellIndex.get(`${hoverCell.col},${hoverCell.row}`) || [];
+  if (entities.length === 0) return;
+  const props = entities.filter((e) => !e.ground);
+  const target = props.length ? props[props.length - 1] : entities[entities.length - 1];
+  removeEntity(target.id);
+}
+
+canvas.addEventListener('pointermove', (event) => {
+  if (walker.active) return;
+  updateHover(event.clientX, event.clientY);
+});
+
+canvas.addEventListener('click', (event) => {
+  if (walker.active) return;
+  updateHover(event.clientX, event.clientY);
+  if (currentBrush === ERASE) eraseAtHover();
+  else placeAtHover();
+});
+
+window.addEventListener('keydown', (event) => {
+  if (walker.active) return;
+  if (event.key === 'r' || event.key === 'R') {
+    pendingRotation = (pendingRotation + 1) % 4;
+    updateBrushStatus();
+    syncGhostTransform();
+  } else if (event.key === '[') {
+    pendingHeight -= 1;
+    updateBrushStatus();
+    syncGhostTransform();
+  } else if (event.key === ']') {
+    pendingHeight += 1;
+    updateBrushStatus();
+    syncGhostTransform();
+  } else if (event.key === 'Escape') {
+    deselectBrush();
+  }
+});
+
+// --- top bar actions --------------------------------------------------------
+
+document.getElementById('action-save').addEventListener('click', () => {
+  saveMap(map);
+});
+
+document.getElementById('action-export').addEventListener('click', () => {
+  exportMapFile(map);
+});
+
+document.getElementById('action-import').addEventListener('click', () => importInput.click());
+importInput.addEventListener('change', async () => {
+  const file = importInput.files?.[0];
+  importInput.value = '';
+  if (!file) return;
+  try {
+    map = await importMapFile(file);
+    await loadEntireMap();
+  } catch (err) {
+    console.error('Failed to import map:', err);
+  }
+});
+
+document.getElementById('action-clear').addEventListener('click', () => {
+  if (!confirm('Clear the entire map? This cannot be undone.')) return;
+  map = createEmptyMap(map.width, map.depth, TILE_SIZE);
+  loadEntireMap();
+});
+
+function exitExplore() {
+  controls.enabled = true;
+  camera.position.copy(preExploreState.position);
+  camera.quaternion.copy(preExploreState.quaternion);
+  camera.zoom = preExploreState.zoom;
+  camera.updateProjectionMatrix();
+  controls.target.copy(preExploreState.target);
+  controls.update();
+  exploreHint.hidden = true;
+  exploreBtn.classList.remove('active');
+  exploreBtn.textContent = '\u{1F6F8} Explore';
+}
+
+let preExploreState = null;
+exploreBtn.addEventListener('click', () => {
+  if (walker.active) {
+    walker.exit();
+    return;
+  }
+  preExploreState = {
+    position: camera.position.clone(),
+    quaternion: camera.quaternion.clone(),
+    zoom: camera.zoom,
+    target: controls.target.clone(),
+  };
+  controls.enabled = false;
+  cellCursor.visible = false;
+  if (ghostObject) ghostObject.visible = false;
+  const eyeHeight = TILE_SIZE * 0.4;
+  walker.enter(mapGroup, exitExplore, {
+    eyeHeight,
+    moveSpeed: eyeHeight * 2.2,
+    startPosition: { x: 0, z: 0 },
+  });
+  exploreHint.hidden = false;
+  exploreBtn.classList.add('active');
+  exploreBtn.textContent = '\u{1F6F8} exit explore';
+});
+
+// --- boot / loop -------------------------------------------------------------
+
+function resize() {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const viewSize = 22;
+  const aspect = width / height;
+  camera.left = (-viewSize * aspect) / 2;
+  camera.right = (viewSize * aspect) / 2;
+  camera.top = viewSize / 2;
+  camera.bottom = -viewSize / 2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+loadEntireMap();
+
+const clock = new THREE.Clock();
+function animate() {
+  const delta = clock.getDelta();
+  if (walker.active) {
+    walker.update(delta);
+  } else {
+    controls.update();
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();

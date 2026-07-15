@@ -17,6 +17,7 @@ export default defineConfig({
       input: {
         main: 'index.html',
         viewer: 'viewer.html',
+        workshop: 'workshop.html',
       },
     },
   },

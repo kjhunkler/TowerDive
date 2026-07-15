@@ -43,19 +43,23 @@ export function createWalkController({ camera, canvas }) {
     return hits.length ? hits[0].point.y : null;
   }
 
-  function enter(object, exitCallback) {
+  function enter(object, exitCallback, options = {}) {
     target = object;
     onExit = exitCallback;
 
     const box = new THREE.Box3().setFromObject(object);
     const scale = box.getSize(new THREE.Vector3()).length();
-    eyeHeight = Math.max(scale * 0.012, 0.001);
-    moveSpeed = eyeHeight * 3.5;
+    // Auto-scale to "ant on this object" by default; callers exploring a
+    // full map (human-scale, not object-relative) pass explicit values.
+    eyeHeight = options.eyeHeight ?? Math.max(scale * 0.012, 0.001);
+    moveSpeed = options.moveSpeed ?? eyeHeight * 3.5;
 
+    const startX = options.startPosition?.x ?? 0;
+    const startZ = options.startPosition?.z ?? 0;
     const startY = box.max.y + scale;
-    const groundY = findSurfaceY(0, 0, startY) ?? box.max.y;
-    camera.position.set(0, groundY + eyeHeight, 0);
-    yaw = 0;
+    const groundY = findSurfaceY(startX, startZ, startY) ?? box.max.y;
+    camera.position.set(startX, groundY + eyeHeight, startZ);
+    yaw = options.yaw ?? 0;
     pitch = 0;
     camera.rotation.order = 'YXZ';
 
