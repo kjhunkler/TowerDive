@@ -18,6 +18,7 @@
       <span id="workshop-title">Workshop</span>
       <div id="workshop-actions">
         <select id="skybox-select" title="Sky"></select>
+        <button id="action-undo" title="Undo last map edit (Ctrl+Z)" disabled>Undo</button>
         <button id="action-save" title="Save to this browser">Save</button>
         <button id="action-export" title="Download as JSON">Export</button>
         <button id="action-import" title="Load a JSON map file">Import</button>
@@ -28,6 +29,7 @@
     </div>
 
     <aside id="palette">
+      <input id="palette-search" type="search" placeholder="Search entities..." aria-label="Search entities" />
       <div id="palette-tool-row">
         <button class="palette-item palette-tool" data-name="__erase" title="Erase">&#129529; Erase</button>
       </div>
@@ -41,7 +43,7 @@
 
     <div id="workshop-hint">
       left-click: place/erase &middot; right-drag: orbit &middot; middle-drag: pan &middot; scroll: zoom
-      &middot; R: rotate &middot; [ ]: stack offset &middot; Esc: deselect
+      &middot; Ctrl+Z: undo &middot; R: rotate &middot; [ ]: stack offset &middot; Esc: deselect
     </div>
 
     <div id="explore-hint" hidden>WASD move &middot; mouse look &middot; Shift sprint &middot; Space jump &middot; Ctrl/C crouch/slide &middot; Z prone &middot; LMB fire &middot; RMB ADS &middot; R reload &middot; ESC exit</div>

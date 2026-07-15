@@ -51,6 +51,11 @@
   background: rgba(232, 236, 245, 0.24);
 }
 
+#workshop-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 #action-explore.active {
   background: rgba(120, 200, 150, 0.35);
 }
@@ -83,8 +88,33 @@
   margin-bottom: 8px;
 }
 
+#palette-search {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(232, 236, 245, 0.18);
+  border-radius: 6px;
+  outline: none;
+  background: rgba(12, 15, 24, 0.65);
+  color: #e8ecf5;
+  font-size: 0.75rem;
+}
+
+#palette-search:focus {
+  border-color: rgba(160, 200, 255, 0.8);
+}
+
+#palette-search::placeholder {
+  color: rgba(232, 236, 245, 0.5);
+}
+
 .palette-category {
   margin-bottom: 10px;
+}
+
+.palette-category[hidden] {
+  display: none;
 }
 
 .palette-category-label {
@@ -114,6 +144,10 @@
   text-align: left;
   cursor: pointer;
   word-break: break-word;
+}
+
+.palette-item[hidden] {
+  display: none;
 }
 
 .palette-item:hover {

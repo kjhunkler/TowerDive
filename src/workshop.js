@@ -44,6 +44,8 @@ const exploreHint = document.getElementById('explore-hint');
 const exploreBtn = document.getElementById('action-explore');
 const importInput = document.getElementById('action-import-input');
 const skyboxSelect = document.getElementById('skybox-select');
+const undoBtn = document.getElementById('action-undo');
+const paletteSearch = document.getElementById('palette-search');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -109,6 +111,7 @@ let map = loadMap() || createEmptyMap(15, 15, TILE_SIZE);
 map.tileSize = TILE_SIZE;
 let cellIndex = new Map();
 const objectsById = new Map();
+let renderGeneration = 0;
 
 function rebuildIndex() {
   cellIndex.clear();
@@ -119,14 +122,15 @@ function rebuildIndex() {
   }
 }
 
-async function renderEntity(entity) {
+async function renderEntity(entity, generation = renderGeneration) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
   const y = entity.ground ? -(await getModelHeight(entity.name)) : propY(entity.heightStep);
   const object = await spawnModel(entity.name, {
     position: { x, y, z },
     rotationY: entity.rotationStep * (Math.PI / 2),
   });
-  if (!map.entities.includes(entity)) return; // removed while loading
+  if (generation !== renderGeneration || !map.entities.includes(entity)) return;
+  object.userData.entityId = entity.id;
   mapGroup.add(object);
   objectsById.set(entity.id, object);
 }
@@ -140,10 +144,12 @@ function removeEntityObject(id) {
 }
 
 async function loadEntireMap() {
+  renderGeneration += 1;
+  const generation = renderGeneration;
   mapGroup.clear();
   objectsById.clear();
   rebuildIndex();
-  await Promise.all(map.entities.map(renderEntity));
+  await Promise.all(map.entities.map((entity) => renderEntity(entity, generation)));
 }
 
 function addEntity(partial) {
@@ -160,6 +166,37 @@ function removeEntity(id) {
   map.entities.splice(idx, 1);
   rebuildIndex();
   removeEntityObject(id);
+}
+
+// --- edit history -----------------------------------------------------------
+
+const undoStack = [];
+const MAX_UNDO_STATES = 50;
+let mapRevision = 0;
+let importRequestId = 0;
+
+function cloneMap(source) {
+  return JSON.parse(JSON.stringify(source));
+}
+
+function updateUndoButton() {
+  undoBtn.disabled = undoStack.length === 0;
+}
+
+function recordUndoState() {
+  undoStack.push(cloneMap(map));
+  if (undoStack.length > MAX_UNDO_STATES) undoStack.shift();
+  updateUndoButton();
+}
+
+async function undoLastEdit() {
+  const previous = undoStack.pop();
+  if (!previous) return;
+  map = previous;
+  map.tileSize = TILE_SIZE;
+  mapRevision += 1;
+  updateUndoButton();
+  await loadEntireMap();
 }
 
 // --- palette --------------------------------------------------------------
@@ -226,6 +263,19 @@ for (const category of buildCategories()) {
   section.appendChild(grid);
   paletteCategories.appendChild(section);
 }
+
+paletteSearch.addEventListener('input', () => {
+  const query = paletteSearch.value.trim().toLocaleLowerCase();
+  paletteCategories.querySelectorAll('.palette-category').forEach((section) => {
+    let visibleCount = 0;
+    section.querySelectorAll('.palette-item').forEach((button) => {
+      const visible = !query || button.dataset.name.toLocaleLowerCase().includes(query);
+      button.hidden = !visible;
+      if (visible) visibleCount += 1;
+    });
+    section.hidden = visibleCount === 0;
+  });
+});
 
 // --- ghost / cell cursor ---------------------------------------------------
 
@@ -297,7 +347,24 @@ function updateGhost() {
 
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const hoverOutline = new THREE.BoxHelper(undefined, 0xffd166);
+hoverOutline.material.depthTest = false;
+hoverOutline.material.transparent = true;
+hoverOutline.material.opacity = 0.9;
+hoverOutline.renderOrder = 10;
+hoverOutline.visible = false;
+scene.add(hoverOutline);
 let hoverCell = null;
+let hoverEntityId = null;
+
+function getEntityIdFromIntersection(intersection) {
+  let object = intersection?.object;
+  while (object && object !== mapGroup) {
+    if (object.userData.entityId !== undefined) return object.userData.entityId;
+    object = object.parent;
+  }
+  return null;
+}
 
 function updateHover(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
@@ -306,15 +373,30 @@ function updateHover(clientX, clientY) {
     -((clientY - rect.top) / rect.height) * 2 + 1
   );
   raycaster.setFromCamera(ndc, camera);
+  const entityHit = raycaster.intersectObject(mapGroup, true)[0];
+  hoverEntityId = getEntityIdFromIntersection(entityHit);
+  const hoverEntity = map.entities.find((entity) => entity.id === hoverEntityId);
+  const hoverObject = objectsById.get(hoverEntityId);
+  hoverOutline.visible = Boolean(hoverObject);
+  if (hoverObject) hoverOutline.setFromObject(hoverObject);
+
+  if (hoverEntity) {
+    hoverCell = { col: hoverEntity.col, row: hoverEntity.row };
+  } else {
+    hoverEntityId = null;
+  }
+
   const point = new THREE.Vector3();
-  if (!raycaster.ray.intersectPlane(groundPlane, point)) {
+  if (!hoverEntity && !raycaster.ray.intersectPlane(groundPlane, point)) {
     hoverCell = null;
     cellCursor.visible = false;
     syncGhostTransform();
     return;
   }
 
-  const { col, row } = worldToCell(point.x, point.z, map.width, map.depth, TILE_SIZE);
+  const { col, row } = hoverEntity
+    ? hoverCell
+    : worldToCell(point.x, point.z, map.width, map.depth, TILE_SIZE);
   if (col < 0 || col >= map.width || row < 0 || row >= map.depth) {
     hoverCell = null;
     cellCursor.visible = false;
@@ -334,6 +416,7 @@ function updateHover(clientX, clientY) {
 
 function placeAtHover() {
   if (!hoverCell || !currentBrush || currentBrush === ERASE) return;
+  recordUndoState();
   const { col, row } = hoverCell;
   const ground = isGroundModel(currentBrush);
   if (ground) {
@@ -350,6 +433,7 @@ function placeAtHover() {
       heightStep: getPendingStackHeight(col, row),
     });
   }
+  mapRevision += 1;
 }
 
 function eraseAtHover() {
@@ -357,8 +441,13 @@ function eraseAtHover() {
   const entities = cellIndex.get(cellKey(hoverCell.col, hoverCell.row)) || [];
   if (entities.length === 0) return;
   const props = entities.filter((e) => !e.ground);
-  const target = props.length ? props[props.length - 1] : entities[entities.length - 1];
+  const target = entities.find((entity) => entity.id === hoverEntityId)
+    || (props.length ? props[props.length - 1] : entities[entities.length - 1]);
+  recordUndoState();
   removeEntity(target.id);
+  mapRevision += 1;
+  hoverEntityId = null;
+  hoverOutline.visible = false;
 }
 
 canvas.addEventListener('pointermove', (event) => {
@@ -375,6 +464,17 @@ canvas.addEventListener('click', (event) => {
 
 window.addEventListener('keydown', (event) => {
   if (walker.active) return;
+  if (
+    event.target instanceof HTMLInputElement
+    || event.target instanceof HTMLTextAreaElement
+    || event.target instanceof HTMLSelectElement
+    || event.target?.isContentEditable
+  ) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'z') {
+    event.preventDefault();
+    undoLastEdit();
+    return;
+  }
   if (event.key === 'r' || event.key === 'R') {
     pendingRotation = (pendingRotation + 1) % 4;
     updateBrushStatus();
@@ -398,6 +498,8 @@ document.getElementById('action-save').addEventListener('click', () => {
   saveMap(map);
 });
 
+undoBtn.addEventListener('click', undoLastEdit);
+
 document.getElementById('action-export').addEventListener('click', () => {
   exportMapFile(map);
 });
@@ -407,8 +509,17 @@ importInput.addEventListener('change', async () => {
   const file = importInput.files?.[0];
   importInput.value = '';
   if (!file) return;
+  const requestId = ++importRequestId;
+  const startingRevision = mapRevision;
   try {
-    map = await importMapFile(file);
+    const importedMap = await importMapFile(file);
+    if (requestId !== importRequestId || startingRevision !== mapRevision) {
+      throw new Error('Map changed before import completed');
+    }
+    recordUndoState();
+    map = importedMap;
+    map.tileSize = TILE_SIZE;
+    mapRevision += 1;
     await loadEntireMap();
   } catch (err) {
     console.error('Failed to import map:', err);
@@ -416,8 +527,10 @@ importInput.addEventListener('change', async () => {
 });
 
 document.getElementById('action-clear').addEventListener('click', () => {
-  if (!confirm('Clear the entire map? This cannot be undone.')) return;
+  if (!confirm('Clear the entire map?')) return;
+  recordUndoState();
   map = createEmptyMap(map.width, map.depth, TILE_SIZE);
+  mapRevision += 1;
   loadEntireMap();
 });
 
@@ -439,6 +552,7 @@ exploreBtn.addEventListener('click', () => {
   }
   controls.enabled = false;
   cellCursor.visible = false;
+  hoverOutline.visible = false;
   if (ghostObject) ghostObject.visible = false;
   // Roughly human-scale for 1-unit tiles: eyes ~0.5 units up, brisk walk.
   walker.enter(mapGroup, exitExplore, {
