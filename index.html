@@ -7,19 +7,43 @@
   <link rel="icon" href="/icons/icon-192.png" type="image/png" />
   <title>TowerDive</title>
   <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="/src/menu.css" />
 </head>
 <body>
   <div id="app">
     <canvas id="scene"></canvas>
-    <div id="hud">
-      <span id="hud-title">TowerDive <span id="hud-version"></span></span>
-      <span id="hud-hint">
-        drag to orbit &middot; scroll to zoom &middot;
-        <a id="hud-viewer-link" href="./viewer.html">browse models</a> &middot;
-        <a id="hud-workshop-link" href="./workshop.html">workshop</a>
-      </span>
+    <div id="menu">
+      <div id="menu-panel">
+        <h1 id="menu-title">TowerDive <span id="hud-version"></span></h1>
+
+        <label id="menu-name-row">
+          <span>Name</span>
+          <input id="menu-name" type="text" maxlength="24" placeholder="pick a name" autocomplete="nickname" />
+        </label>
+
+        <div id="menu-buttons">
+          <button id="menu-create" class="menu-button">&#128296; Create New Map</button>
+          <button id="menu-load" class="menu-button">&#128194; Load Saved Map</button>
+          <button id="menu-host" class="menu-button menu-button-primary">&#128225; Host</button>
+        </div>
+
+        <div id="menu-join">
+          <div id="menu-join-header">
+            <span>Join a game</span>
+            <button id="menu-autojoin" disabled>&#9889; Auto Join</button>
+          </div>
+          <div id="menu-sessions">
+            <div class="menu-empty">Searching for hosts&hellip;</div>
+          </div>
+        </div>
+
+        <div id="menu-footer">
+          <a href="./viewer.html">browse models</a>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/menu.js"></script>
 </body>
 </html>

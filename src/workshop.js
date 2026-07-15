@@ -8,6 +8,8 @@ import { createWalkController } from './walkController.js';
 import { createWeaponController } from './weaponController.js';
 import { TILE_SIZE } from './grid.js';
 import { applySkybox, SKYBOXES } from './skybox.js';
+import { getNetIntent, getPlayerName, createGameSession, announceInLobby, selfId } from './net.js';
+import { createRemotePlayers } from './remotePlayers.js';
 
 const ERASE = '__erase';
 
@@ -22,6 +24,7 @@ function getCellStackBase(col, row) {
 }
 
 const canvas = document.getElementById('scene');
+const netStatusEl = document.getElementById('net-status');
 const paletteToolRow = document.getElementById('palette-tool-row');
 const paletteCategories = document.getElementById('palette-categories');
 const brushNameEl = document.getElementById('brush-status-name');
@@ -51,7 +54,10 @@ for (const name of SKYBOXES) {
 }
 skyboxSelect.value = 'day';
 applySkybox(scene, skyboxSelect.value);
-skyboxSelect.addEventListener('change', () => applySkybox(scene, skyboxSelect.value));
+skyboxSelect.addEventListener('change', () => {
+  applySkybox(scene, skyboxSelect.value);
+  broadcastOp({ t: 'sky', name: skyboxSelect.value });
+});
 
 const ISO_ANGLE = Math.atan(1 / Math.sqrt(2));
 const camera = new THREE.OrthographicCamera();
@@ -89,11 +95,29 @@ const mapGroup = new THREE.Group();
 scene.add(mapGroup);
 
 const walker = createWalkController({ camera: exploreCamera, canvas });
-const weapons = createWeaponController({ camera: exploreCamera, canvas, scene, targets: [mapGroup] });
+const weapons = createWeaponController({
+  camera: exploreCamera,
+  canvas,
+  scene,
+  targets: [mapGroup],
+  onShot: (from, to, hit) => {
+    net?.sendShot({ f: [from.x, from.y, from.z], t: [to.x, to.y, to.z], hit });
+  },
+});
 
 // --- map data -----------------------------------------------------------
 
-let map = loadMap() || createEmptyMap(15, 15, TILE_SIZE);
+// The home menu records how this workshop session should start: a fresh map,
+// the locally saved map, hosting the saved map for others, or joining a
+// remote host (in which case the real map arrives over the wire).
+const netIntent = getNetIntent() || { mode: 'saved' };
+const isJoiner = netIntent.mode === 'join';
+const isHost = netIntent.mode === 'host';
+const netEnabled = isHost || isJoiner;
+
+let map = netIntent.mode === 'new' || isJoiner
+  ? createEmptyMap(15, 15, TILE_SIZE)
+  : loadMap() || createEmptyMap(15, 15, TILE_SIZE);
 // Cell spacing is dictated by the models (1x1 tiles), not the stored map —
 // maps saved before the spacing fix carry a stale tileSize of 2.
 map.tileSize = TILE_SIZE;
@@ -199,8 +223,17 @@ async function loadEntireMap() {
   await Promise.all(map.entities.map((entity) => renderEntity(entity, generation)));
 }
 
+let mpIdCounter = 0;
+
+// In multiplayer every peer mints entity ids under its own peer-id prefix,
+// so simultaneous placements on different machines can never collide. Solo
+// maps keep the compact numeric counter from the save format.
+function nextEntityId() {
+  return netEnabled ? `${selfId.slice(0, 8)}-${mpIdCounter++}` : map.nextId++;
+}
+
 function addEntity(partial) {
-  const entity = { id: map.nextId++, rotationStep: 0, heightStep: 0, ...partial };
+  const entity = { id: nextEntityId(), rotationStep: 0, heightStep: 0, ...partial };
   map.entities.push(entity);
   rebuildIndex();
   renderEntity(entity);
@@ -232,16 +265,22 @@ function cloneMap(source) {
 }
 
 function updateUndoButton() {
-  undoBtn.disabled = undoStack.length === 0;
+  undoBtn.disabled = netEnabled || undoStack.length === 0;
+  if (netEnabled) undoBtn.title = 'Undo is disabled in multiplayer sessions';
 }
 
+// Whole-map undo snapshots can't coexist with other players' live edits —
+// restoring one would silently revert their work — so undo is a solo-only
+// feature.
 function recordUndoState() {
+  if (netEnabled) return;
   undoStack.push(cloneMap(map));
   if (undoStack.length > MAX_UNDO_STATES) undoStack.shift();
   updateUndoButton();
 }
 
 async function undoLastEdit() {
+  if (netEnabled) return;
   const previous = undoStack.pop();
   if (!previous) return;
   map = previous;
@@ -756,10 +795,11 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
   recordUndoState();
   const { col, row } = cell;
   const ground = isGroundModel(brush);
+  let placed;
   if (ground) {
     const existingGround = (cellIndex.get(cellKey(col, row)) || []).find((e) => e.ground);
     if (existingGround) removeEntity(existingGround.id);
-    addEntity({
+    placed = addEntity({
       name: brush,
       ground: true,
       col,
@@ -774,7 +814,7 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
     const bounds = await getModelBounds(brush);
     const verticalBounds = getVerticalBounds(bounds, mirrors.y);
     const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * bounds.height;
-    addEntity({
+    placed = addEntity({
       name: brush,
       ground: false,
       col,
@@ -789,6 +829,7 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
     });
     await layoutCellStack(col, row);
   }
+  broadcastOp({ t: 'add', e: placed });
   mapRevision += 1;
   syncQuickbar();
 }
@@ -804,6 +845,7 @@ async function eraseEntity({ cell, entityId }) {
   recordUndoState();
   removeEntity(target.id);
   await layoutCellStack(cell.col, cell.row);
+  broadcastOp({ t: 'del', id: target.id });
   mapRevision += 1;
   syncQuickbar();
   hoverEntityId = null;
@@ -816,21 +858,15 @@ async function deleteSelectedEntity(entityId) {
   recordUndoState();
   removeEntity(entity.id);
   await layoutCellStack(entity.col, entity.row);
+  broadcastOp({ t: 'del', id: entity.id });
   mapRevision += 1;
   syncQuickbar();
   clearEntitySelection();
 }
 
-async function moveSelectedEntity({ entityId, cell }) {
-  const entity = map.entities.find((candidate) => candidate.id === entityId);
-  if (!entity || !cell) return;
-  if (entity.col === cell.col && entity.row === cell.row) {
-    moveEntityId = null;
-    updateBrushStatus();
-    return;
-  }
-
-  recordUndoState();
+// Shared between the local UI handlers and remote-op application, so both
+// paths stay behaviorally identical.
+async function moveEntityCore(entity, cell) {
   const oldCell = { col: entity.col, row: entity.row };
   map.entities.splice(map.entities.indexOf(entity), 1);
   rebuildIndex();
@@ -856,28 +892,17 @@ async function moveSelectedEntity({ entityId, cell }) {
     layoutCellStack(cell.col, cell.row),
   ]);
   mapRevision += 1;
-  moveEntityId = null;
   syncQuickbar();
-  updateSelectionOutline();
-  updateBrushStatus();
 }
 
-async function adjustSelectedHeight(entityId, delta) {
-  const entity = map.entities.find((candidate) => candidate.id === entityId);
-  if (!entity || entity.ground) return;
-  recordUndoState();
+async function adjustHeightCore(entity, delta) {
   entity.stackOffset = (entity.stackOffset ?? 0) + delta;
   entity.heightStep = (entity.heightStep ?? 0) + delta;
   await layoutCellStack(entity.col, entity.row);
   mapRevision += 1;
-  updateSelectionOutline();
-  updateBrushStatus();
 }
 
-async function toggleSelectedMirror(entityId, axis) {
-  const entity = map.entities.find((candidate) => candidate.id === entityId);
-  if (!entity) return;
-  recordUndoState();
+async function toggleMirrorCore(entity, axis) {
   const property = `mirror${axis.toLocaleUpperCase()}`;
   entity[property] = !entity[property];
 
@@ -890,6 +915,41 @@ async function toggleSelectedMirror(entityId, axis) {
     await layoutCellStack(entity.col, entity.row);
   }
   mapRevision += 1;
+}
+
+async function moveSelectedEntity({ entityId, cell }) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity || !cell) return;
+  if (entity.col === cell.col && entity.row === cell.row) {
+    moveEntityId = null;
+    updateBrushStatus();
+    return;
+  }
+
+  recordUndoState();
+  await moveEntityCore(entity, cell);
+  broadcastOp({ t: 'move', id: entity.id, col: cell.col, row: cell.row });
+  moveEntityId = null;
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+async function adjustSelectedHeight(entityId, delta) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity || entity.ground) return;
+  recordUndoState();
+  await adjustHeightCore(entity, delta);
+  broadcastOp({ t: 'height', id: entity.id, delta });
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+async function toggleSelectedMirror(entityId, axis) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity) return;
+  recordUndoState();
+  await toggleMirrorCore(entity, axis);
+  broadcastOp({ t: 'mirror', id: entity.id, axis });
   updateSelectionOutline();
   updateBrushStatus();
 }
@@ -1029,6 +1089,7 @@ importInput.addEventListener('change', async () => {
       map.tileSize = TILE_SIZE;
       mapRevision += 1;
       clearEntitySelection();
+      broadcastOp({ t: 'replace', map: cloneMap(map) });
       await loadEntireMap();
     });
   } catch (err) {
@@ -1043,6 +1104,7 @@ document.getElementById('action-clear').addEventListener('click', () => {
     map = createEmptyMap(map.width, map.depth, TILE_SIZE);
     mapRevision += 1;
     clearEntitySelection();
+    broadcastOp({ t: 'clear', width: map.width, depth: map.depth });
     await loadEntireMap();
   });
 });
@@ -1079,6 +1141,235 @@ exploreBtn.addEventListener('click', () => {
   exploreBtn.textContent = '\u{1F6F8} exit explore';
 });
 
+// --- multiplayer --------------------------------------------------------------
+
+let net = null;
+let lobby = null;
+let remotePlayers = null;
+let mapSynced = !isJoiner; // joiners wait for the host's map before edits count
+const sessionStartedAt = Date.now();
+
+function broadcastOp(op) {
+  if (net && mapSynced) net.sendOp(op);
+}
+
+function findEntity(id) {
+  return map.entities.find((entity) => entity.id === id);
+}
+
+// Remote edits reuse the same cores as local edits and run through the same
+// serialization queue, so a burst of concurrent edits can't interleave
+// mid-async-operation.
+async function applyRemoteOp(op) {
+  switch (op?.t) {
+    case 'add': {
+      const entity = op.e;
+      if (!entity || findEntity(entity.id)) return;
+      if (entity.ground) {
+        const existing = (cellIndex.get(cellKey(entity.col, entity.row)) || []).find((e) => e.ground);
+        if (existing) removeEntity(existing.id);
+      }
+      map.entities.push(entity);
+      rebuildIndex();
+      if (!entity.ground) await layoutCellStack(entity.col, entity.row);
+      renderEntity(entity);
+      mapRevision += 1;
+      syncQuickbar();
+      return;
+    }
+    case 'del': {
+      const entity = findEntity(op.id);
+      if (!entity) return;
+      removeEntity(entity.id);
+      await layoutCellStack(entity.col, entity.row);
+      mapRevision += 1;
+      syncQuickbar();
+      return;
+    }
+    case 'move': {
+      const entity = findEntity(op.id);
+      if (!entity) return;
+      await moveEntityCore(entity, { col: op.col, row: op.row });
+      updateSelectionOutline();
+      return;
+    }
+    case 'height': {
+      const entity = findEntity(op.id);
+      if (!entity || entity.ground) return;
+      await adjustHeightCore(entity, op.delta);
+      updateSelectionOutline();
+      return;
+    }
+    case 'mirror': {
+      const entity = findEntity(op.id);
+      if (!entity || !['x', 'y', 'z'].includes(op.axis)) return;
+      await toggleMirrorCore(entity, op.axis);
+      updateSelectionOutline();
+      return;
+    }
+    case 'clear': {
+      map = createEmptyMap(op.width || map.width, op.depth || map.depth, TILE_SIZE);
+      mapRevision += 1;
+      clearEntitySelection();
+      await loadEntireMap();
+      return;
+    }
+    case 'replace': {
+      if (op.map?.version !== 1) return;
+      map = op.map;
+      map.tileSize = TILE_SIZE;
+      mapRevision += 1;
+      clearEntitySelection();
+      await loadEntireMap();
+      return;
+    }
+    case 'sky': {
+      if (SKYBOXES.includes(op.name)) {
+        skyboxSelect.value = op.name;
+        applySkybox(scene, op.name);
+      }
+      return;
+    }
+  }
+}
+
+function updateNetStatus() {
+  if (!netEnabled) return;
+  netStatusEl.hidden = false;
+  netStatusEl.classList.toggle('net-status-syncing', !mapSynced);
+  if (!mapSynced) {
+    netStatusEl.textContent = `⏳ joining ${netIntent.hostName || 'host'}…`;
+    return;
+  }
+  const count = net ? net.peers.size + 1 : 1;
+  const names = net
+    ? [...net.peers.values()].map((peer) => peer.name).filter(Boolean).join(', ')
+    : '';
+  netStatusEl.textContent = isHost
+    ? `\u{1F4E1} Hosting · ${count} player${count === 1 ? '' : 's'}`
+    : `\u{1F517} ${netIntent.hostName || 'host'}'s session · ${count} player${count === 1 ? '' : 's'}`;
+  netStatusEl.title = names ? `Also here: ${names}` : 'No one else here yet';
+}
+
+if (netEnabled) {
+  const playerName = getPlayerName() || 'player';
+  const hostId = isHost ? selfId : netIntent.hostId;
+
+  remotePlayers = createRemotePlayers({
+    scene,
+    tileSize: TILE_SIZE,
+    cellToWorld: (col, row) => cellToWorld(col, row, map.width, map.depth, TILE_SIZE),
+  });
+
+  net = createGameSession({
+    hostId,
+    isHost,
+    playerName,
+    handlers: {
+      // Host answers each newcomer with a consistent snapshot; taking it
+      // through the edit queue guarantees no half-applied operation is
+      // captured mid-flight.
+      onPeerNeedsMap(peerId) {
+        enqueueMapEdit(() => {
+          net.sendMap({ map: cloneMap(map), sky: skyboxSelect.value }, peerId);
+        });
+      },
+      onMap(data, peerId) {
+        if (!isJoiner || mapSynced || peerId !== netIntent.hostId) return;
+        if (data?.map?.version !== 1) return;
+        enqueueMapEdit(async () => {
+          map = data.map;
+          map.tileSize = TILE_SIZE;
+          mapRevision += 1;
+          mapSynced = true;
+          clearEntitySelection();
+          if (SKYBOXES.includes(data.sky)) {
+            skyboxSelect.value = data.sky;
+            applySkybox(scene, data.sky);
+          }
+          await loadEntireMap();
+          updateNetStatus();
+        });
+      },
+      // Ops arriving before the initial snapshot are dropped: everything the
+      // host did up to the snapshot is already inside it.
+      onOp(op) {
+        if (!mapSynced) return;
+        enqueueMapEdit(() => applyRemoteOp(op));
+      },
+      onState(state, peerId) {
+        remotePlayers.pushState(peerId, state);
+      },
+      onShot(shot) {
+        remotePlayers.showShot(shot);
+      },
+      onPeerLeft(peerId) {
+        remotePlayers.removePeer(peerId);
+      },
+      onPeersChanged() {
+        for (const [peerId, info] of net.peers) {
+          if (info.name) remotePlayers.setPeerName(peerId, info.name);
+        }
+        updateNetStatus();
+        lobby?.update();
+      },
+    },
+  });
+
+  if (isHost) {
+    lobby = announceInLobby(() => ({
+      name: playerName,
+      players: net.peers.size + 1,
+      startedAt: sessionStartedAt,
+    }));
+  }
+
+  updateNetStatus();
+  updateUndoButton();
+
+  window.addEventListener('pagehide', () => {
+    lobby?.leave();
+    net.leave();
+  });
+}
+
+// Fixed-rate state broadcast: 20 Hz snapshots of where we are and what we're
+// doing. Our own movement stays fully client-predicted (the walk controller
+// simulates locally), remote players are drawn via snapshot interpolation in
+// remotePlayers.js — the classic FPS split of prediction + interpolation.
+const STATE_SEND_INTERVAL = 1 / 20;
+let stateSendTimer = 0;
+
+function round3(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function buildLocalState() {
+  if (walker.active) {
+    return {
+      m: 'x',
+      p: [round3(exploreCamera.position.x), round3(exploreCamera.position.y), round3(exploreCamera.position.z)],
+      y: round3(exploreCamera.rotation.y),
+      pt: round3(exploreCamera.rotation.x),
+      eh: round3(walker.eyeHeight),
+    };
+  }
+  return {
+    m: 'e',
+    p: [0, 0, 0],
+    c: hoverCell ? [hoverCell.col, hoverCell.row] : null,
+  };
+}
+
+function netTick(delta) {
+  if (!net) return;
+  remotePlayers.update();
+  stateSendTimer += delta;
+  if (stateSendTimer < STATE_SEND_INTERVAL) return;
+  stateSendTimer = stateSendTimer > STATE_SEND_INTERVAL * 2 ? 0 : stateSendTimer - STATE_SEND_INTERVAL;
+  net.sendState(buildLocalState());
+}
+
 // --- boot / loop -------------------------------------------------------------
 
 function resize() {
@@ -1098,7 +1389,8 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-enqueueMapEdit(loadEntireMap);
+// Joiners start from the host's synced map, not the local placeholder.
+if (!isJoiner) enqueueMapEdit(loadEntireMap);
 
 const clock = new THREE.Clock();
 function animate() {
@@ -1109,6 +1401,7 @@ function animate() {
   } else {
     controls.update();
   }
+  netTick(delta);
   renderer.render(scene, walker.active ? exploreCamera : camera);
   requestAnimationFrame(animate);
 }

@@ -19,7 +19,7 @@ const WEAPON_DEFAULTS = {
   recoilKick: 0.018,
 };
 
-export function createWeaponController({ camera, canvas, scene, targets = [] }) {
+export function createWeaponController({ camera, canvas, scene, targets = [], onShot = null }) {
   const config = { ...WEAPON_DEFAULTS };
   let active = false;
   let model = null;
@@ -183,6 +183,7 @@ export function createWeaponController({ camera, canvas, scene, targets = [] }) 
     const to = hits[0]?.point ?? raycaster.ray.at(config.range, new THREE.Vector3());
     spawnTracer(from, to);
     if (hits[0]) spawnImpact(hits[0].point);
+    onShot?.(from, to, Boolean(hits[0]));
 
     camera.rotation.x -= config.recoilKick;
     if (model) model.position.z += 0.035;

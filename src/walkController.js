@@ -292,5 +292,8 @@ export function createWalkController({ camera, canvas }) {
     get state() {
       return { grounded, stance, speed: horizontalSpeed() };
     },
+    get eyeHeight() {
+      return eyeHeight;
+    },
   };
 }
