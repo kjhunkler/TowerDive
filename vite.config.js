@@ -12,6 +12,14 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        viewer: 'viewer.html',
+      },
+    },
+  },
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',

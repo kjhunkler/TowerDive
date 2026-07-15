@@ -1,0 +1,74 @@
+#viewer-hud {
+  position: absolute;
+  top: env(safe-area-inset-top, 0);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px;
+  color: #e8ecf5;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+#viewer-back {
+  align-self: flex-start;
+  pointer-events: auto;
+  color: #cdd6f4;
+  text-decoration: none;
+  font-size: 0.8rem;
+  opacity: 0.75;
+  position: absolute;
+  left: 16px;
+  top: 16px;
+}
+
+#viewer-back:hover {
+  opacity: 1;
+}
+
+#viewer-name {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#viewer-counter {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(232, 236, 245, 0.12);
+  color: #e8ecf5;
+  font-size: 1.75rem;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+.viewer-nav:hover {
+  background: rgba(232, 236, 245, 0.22);
+}
+
+.viewer-nav:active {
+  background: rgba(232, 236, 245, 0.32);
+}
+
+#viewer-prev {
+  left: 16px;
+}
+
+#viewer-next {
+  right: 16px;
+}
