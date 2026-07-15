@@ -58,3 +58,61 @@ html, body {
   pointer-events: auto;
   color: inherit;
 }
+
+#weapon-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: #e8ecf5;
+  font-weight: 700;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.65);
+}
+
+#weapon-reticle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+#weapon-reticle::before,
+#weapon-reticle::after {
+  content: '';
+  position: absolute;
+  background: rgba(232, 236, 245, 0.88);
+  border-radius: 999px;
+}
+
+#weapon-reticle::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+
+#weapon-reticle::after {
+  left: 0;
+  top: 8px;
+  width: 18px;
+  height: 2px;
+}
+
+#weapon-reticle.ads {
+  opacity: 0.2;
+  transform: translate(-50%, -50%) scale(0.65);
+}
+
+#weapon-ammo {
+  position: absolute;
+  right: max(24px, env(safe-area-inset-right, 0px));
+  bottom: max(22px, env(safe-area-inset-bottom, 0px));
+  padding: 8px 12px;
+  border: 1px solid rgba(232, 236, 245, 0.25);
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.45);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}

@@ -5,6 +5,7 @@ import { buildCategories, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
 import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
 import { createWalkController } from './walkController.js';
+import { createWeaponController } from './weaponController.js';
 import { TILE_SIZE } from './grid.js';
 import { TOWER_PIECE_HEIGHT } from './tower.js';
 import { applySkybox, SKYBOXES } from './skybox.js';
@@ -98,6 +99,7 @@ const mapGroup = new THREE.Group();
 scene.add(mapGroup);
 
 const walker = createWalkController({ camera: exploreCamera, canvas });
+const weapons = createWeaponController({ camera: exploreCamera, canvas, scene, targets: [mapGroup] });
 
 // --- map data -----------------------------------------------------------
 
@@ -423,6 +425,7 @@ document.getElementById('action-clear').addEventListener('click', () => {
 // camera (and its orbit controls) are untouched — exiting just switches
 // which camera renders.
 function exitExplore() {
+  weapons.exit();
   controls.enabled = true;
   exploreHint.hidden = true;
   exploreBtn.classList.remove('active');
@@ -443,6 +446,7 @@ exploreBtn.addEventListener('click', () => {
     moveSpeed: TILE_SIZE * 2.5,
     startPosition: { x: 0, z: 0 },
   });
+  weapons.enter();
   exploreHint.hidden = false;
   exploreBtn.classList.add('active');
   exploreBtn.textContent = '\u{1F6F8} exit explore';
@@ -474,6 +478,7 @@ function animate() {
   const delta = clock.getDelta();
   if (walker.active) {
     walker.update(delta);
+    weapons.update(delta);
   } else {
     controls.update();
   }
