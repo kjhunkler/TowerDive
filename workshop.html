@@ -29,7 +29,10 @@
     </div>
 
     <aside id="palette">
-      <input id="palette-search" type="search" placeholder="Search entities..." aria-label="Search entities" />
+      <div id="palette-filter-row">
+        <input id="palette-search" type="search" placeholder="Search entities..." aria-label="Search entities" />
+        <button id="palette-starred-filter" type="button" aria-pressed="false" title="Show starred items only">&#9734; Starred</button>
+      </div>
       <div id="palette-tool-row">
         <button class="palette-item palette-tool" data-name="__erase" title="Erase">&#129529; Erase</button>
       </div>

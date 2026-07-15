@@ -32,6 +32,7 @@ const importInput = document.getElementById('action-import-input');
 const skyboxSelect = document.getElementById('skybox-select');
 const undoBtn = document.getElementById('action-undo');
 const paletteSearch = document.getElementById('palette-search');
+const starredFilterBtn = document.getElementById('palette-starred-filter');
 const quickbar = document.getElementById('quickbar');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -246,6 +247,28 @@ let pendingHeight = 0;
 let selectedEntityId = null;
 let moveEntityId = null;
 let copyMode = false;
+const STARRED_STORAGE_KEY = 'towerdive-workshop-starred-v1';
+let starredOnly = false;
+
+function loadStarredNames() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STARRED_STORAGE_KEY) || '[]');
+    return new Set(Array.isArray(stored) ? stored.filter((name) => typeof name === 'string') : []);
+  } catch (error) {
+    console.error('Failed to load starred items:', error);
+    return new Set();
+  }
+}
+
+const starredNames = loadStarredNames();
+
+function saveStarredNames() {
+  try {
+    localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify([...starredNames]));
+  } catch (error) {
+    console.error('Failed to save starred items:', error);
+  }
+}
 
 function updateBrushStatus() {
   const selectedEntity = map.entities.find((entity) => entity.id === selectedEntityId);
@@ -342,30 +365,73 @@ for (const category of buildCategories()) {
   const grid = document.createElement('div');
   grid.className = 'palette-grid';
   for (const name of category.items) {
+    const entry = document.createElement('div');
+    entry.className = 'palette-entry';
+
     const btn = document.createElement('button');
     btn.className = 'palette-item';
     btn.dataset.name = name;
     btn.textContent = name.slice(name.indexOf('/') + 1);
     btn.title = name;
     btn.addEventListener('click', () => selectBrush(name));
-    grid.appendChild(btn);
+    entry.appendChild(btn);
+
+    const starBtn = document.createElement('button');
+    starBtn.className = 'palette-star';
+    starBtn.type = 'button';
+    starBtn.dataset.starName = name;
+    starBtn.addEventListener('click', () => toggleStar(name));
+    entry.appendChild(starBtn);
+    grid.appendChild(entry);
   }
   section.appendChild(grid);
   paletteCategories.appendChild(section);
 }
 
-paletteSearch.addEventListener('input', () => {
+function applyPaletteFilters() {
   const query = paletteSearch.value.trim().toLocaleLowerCase();
   paletteCategories.querySelectorAll('.palette-category').forEach((section) => {
     let visibleCount = 0;
-    section.querySelectorAll('.palette-item').forEach((button) => {
-      const visible = !query || button.dataset.name.toLocaleLowerCase().includes(query);
-      button.hidden = !visible;
+    section.querySelectorAll('.palette-entry').forEach((entry) => {
+      const name = entry.querySelector('.palette-item').dataset.name;
+      const visible = (!query || name.toLocaleLowerCase().includes(query))
+        && (!starredOnly || starredNames.has(name));
+      entry.hidden = !visible;
       if (visible) visibleCount += 1;
     });
     section.hidden = visibleCount === 0;
   });
+}
+
+function updateStarControls() {
+  paletteCategories.querySelectorAll('.palette-star').forEach((button) => {
+    const starred = starredNames.has(button.dataset.starName);
+    button.classList.toggle('starred', starred);
+    button.textContent = starred ? '\u2605' : '\u2606';
+    button.title = starred ? 'Remove star' : 'Star item';
+    button.setAttribute('aria-label', `${starred ? 'Unstar' : 'Star'} ${button.dataset.starName}`);
+    button.setAttribute('aria-pressed', String(starred));
+  });
+  starredFilterBtn.textContent = `${starredOnly ? '\u2605' : '\u2606'} Starred`;
+  starredFilterBtn.setAttribute('aria-pressed', String(starredOnly));
+}
+
+function toggleStar(name) {
+  if (starredNames.has(name)) starredNames.delete(name);
+  else starredNames.add(name);
+  saveStarredNames();
+  updateStarControls();
+  applyPaletteFilters();
+  syncQuickbar();
+}
+
+paletteSearch.addEventListener('input', applyPaletteFilters);
+starredFilterBtn.addEventListener('click', () => {
+  starredOnly = !starredOnly;
+  updateStarControls();
+  applyPaletteFilters();
 });
+updateStarControls();
 
 // --- quickbar ---------------------------------------------------------------
 
@@ -441,6 +507,10 @@ function createQuickbarItem(name) {
   button.title = name;
   button.setAttribute('aria-label', `Select ${name}`);
   button.addEventListener('click', () => selectBrush(name));
+  button.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    toggleStar(name);
+  });
 
   const preview = document.createElement('img');
   preview.className = 'quickbar-preview';
@@ -456,6 +526,12 @@ function createQuickbarItem(name) {
   label.className = 'quickbar-label';
   label.textContent = name.slice(name.indexOf('/') + 1);
   button.appendChild(label);
+  if (starredNames.has(name)) {
+    const star = document.createElement('span');
+    star.className = 'quickbar-star';
+    star.textContent = '\u2605';
+    button.appendChild(star);
+  }
   if (name === currentBrush) button.classList.add('selected');
   return button;
 }

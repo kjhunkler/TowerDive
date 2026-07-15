@@ -88,10 +88,16 @@
   margin-bottom: 8px;
 }
 
+#palette-filter-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
 #palette-search {
   box-sizing: border-box;
-  width: 100%;
-  margin-bottom: 8px;
+  min-width: 0;
+  flex: 1;
   padding: 7px 8px;
   border: 1px solid rgba(232, 236, 245, 0.18);
   border-radius: 6px;
@@ -107,6 +113,22 @@
 
 #palette-search::placeholder {
   color: rgba(232, 236, 245, 0.5);
+}
+
+#palette-starred-filter {
+  padding: 6px;
+  border: 1px solid rgba(232, 236, 245, 0.18);
+  border-radius: 6px;
+  background: rgba(232, 236, 245, 0.08);
+  color: #e8ecf5;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+#palette-starred-filter[aria-pressed="true"] {
+  border-color: rgba(255, 214, 102, 0.85);
+  background: rgba(255, 214, 102, 0.2);
+  color: #ffe39a;
 }
 
 .palette-category {
@@ -131,6 +153,15 @@
   gap: 4px;
 }
 
+.palette-entry {
+  position: relative;
+  min-width: 0;
+}
+
+.palette-entry[hidden] {
+  display: none;
+}
+
 .palette-item {
   display: block;
   width: 100%;
@@ -144,6 +175,28 @@
   text-align: left;
   cursor: pointer;
   word-break: break-word;
+}
+
+.palette-entry .palette-item {
+  padding-right: 22px;
+}
+
+.palette-star {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: rgba(232, 236, 245, 0.55);
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.palette-star:hover,
+.palette-star.starred {
+  color: #ffd666;
 }
 
 .palette-item[hidden] {
@@ -241,6 +294,15 @@
   line-height: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.quickbar-star {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  color: #ffd666;
+  font-size: 0.7rem;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 #workshop-hint {

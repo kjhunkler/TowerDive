@@ -48,6 +48,7 @@ export function createWalkController({ camera, canvas }) {
   let slideTimer = 0;
   let slideCooldownTimer = 0;
   let stance = 'stand';
+  let crouchWasHeld = false;
 
   const keys = new Set();
   const raycaster = new THREE.Raycaster();
@@ -61,12 +62,18 @@ export function createWalkController({ camera, canvas }) {
   const probeOrigin = new THREE.Vector3();
 
   function onKeyDown(event) {
+    event.preventDefault();
     if (event.code === 'Space') jumpBufferTimer = config.jumpBufferTime;
     keys.add(event.code);
   }
 
   function onKeyUp(event) {
     keys.delete(event.code);
+  }
+
+  function onWindowBlur() {
+    keys.clear();
+    crouchWasHeld = false;
   }
 
   function onMouseMove(event) {
@@ -130,6 +137,7 @@ export function createWalkController({ camera, canvas }) {
 
   function updateStance(delta) {
     const crouchHeld = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC');
+    const crouchPressed = crouchHeld && !crouchWasHeld;
     const proneHeld = keys.has('KeyZ');
     const sprintHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
 
@@ -139,7 +147,7 @@ export function createWalkController({ camera, canvas }) {
     } else if (proneHeld) {
       stance = 'prone';
     } else if (crouchHeld) {
-      const canStartSlide = grounded && sprintHeld && slideCooldownTimer <= 0 && horizontalSpeed() >= config.slideMinSpeed;
+      const canStartSlide = crouchPressed && grounded && sprintHeld && slideCooldownTimer <= 0 && horizontalSpeed() >= config.slideMinSpeed;
       if (canStartSlide) {
         slideTimer = config.slideDuration;
         slideCooldownTimer = config.slideCooldown;
@@ -158,6 +166,7 @@ export function createWalkController({ camera, canvas }) {
     const targetEyeHeight = stance === 'prone' ? proneEyeHeight : stance === 'crouch' || stance === 'slide' ? crouchEyeHeight : standEyeHeight;
     const blend = 1 - Math.exp(-config.stanceLerp * delta);
     eyeHeight = THREE.MathUtils.lerp(eyeHeight, targetEyeHeight, blend);
+    crouchWasHeld = crouchHeld;
   }
 
   function enter(object, exitCallback, options = {}) {
@@ -195,6 +204,7 @@ export function createWalkController({ camera, canvas }) {
     slideTimer = 0;
     slideCooldownTimer = 0;
     stance = 'stand';
+    crouchWasHeld = false;
     yaw = options.yaw ?? 0;
     pitch = 0;
     camera.rotation.order = 'YXZ';
@@ -203,6 +213,7 @@ export function createWalkController({ camera, canvas }) {
     document.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('pointerlockchange', onPointerLockChange);
+    window.addEventListener('blur', onWindowBlur);
     canvas.requestPointerLock?.();
 
     active = true;
@@ -216,6 +227,7 @@ export function createWalkController({ camera, canvas }) {
     document.removeEventListener('keyup', onKeyUp);
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('pointerlockchange', onPointerLockChange);
+    window.removeEventListener('blur', onWindowBlur);
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     onExit?.();
   }
