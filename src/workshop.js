@@ -46,6 +46,7 @@ const importInput = document.getElementById('action-import-input');
 const skyboxSelect = document.getElementById('skybox-select');
 const undoBtn = document.getElementById('action-undo');
 const paletteSearch = document.getElementById('palette-search');
+const quickbar = document.getElementById('quickbar');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -149,6 +150,7 @@ async function loadEntireMap() {
   mapGroup.clear();
   objectsById.clear();
   rebuildIndex();
+  syncQuickbar();
   await Promise.all(map.entities.map((entity) => renderEntity(entity, generation)));
 }
 
@@ -224,8 +226,8 @@ function selectBrush(name) {
   pendingRotation = 0;
   pendingHeight = 0;
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
-  const el = document.querySelector(`.palette-item[data-name="${CSS.escape(name)}"]`);
-  el?.classList.add('selected');
+  document.querySelectorAll('.quickbar-item.selected').forEach((el) => el.classList.remove('selected'));
+  document.querySelectorAll(`[data-name="${CSS.escape(name)}"]`).forEach((el) => el.classList.add('selected'));
   updateGhost();
   updateBrushStatus();
 }
@@ -233,6 +235,7 @@ function selectBrush(name) {
 function deselectBrush() {
   currentBrush = null;
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
+  document.querySelectorAll('.quickbar-item.selected').forEach((el) => el.classList.remove('selected'));
   updateGhost();
   updateBrushStatus();
 }
@@ -276,6 +279,109 @@ paletteSearch.addEventListener('input', () => {
     section.hidden = visibleCount === 0;
   });
 });
+
+// --- quickbar ---------------------------------------------------------------
+
+const QUICKBAR_STORAGE_KEY = 'towerdive-workshop-quickbar-v1';
+const previewRequests = new Map();
+let previewQueue = Promise.resolve();
+const previewRenderer = new THREE.WebGLRenderer({
+  alpha: true,
+  antialias: true,
+  preserveDrawingBuffer: true,
+});
+previewRenderer.setPixelRatio(1);
+previewRenderer.setSize(136, 80, false);
+
+function loadQuickbarOrder() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(QUICKBAR_STORAGE_KEY) || '[]');
+    return Array.isArray(stored) ? stored.filter((name) => typeof name === 'string') : [];
+  } catch (error) {
+    console.error('Failed to load quickbar:', error);
+    return [];
+  }
+}
+
+let quickbarOrder = loadQuickbarOrder();
+
+function saveQuickbarOrder() {
+  try {
+    localStorage.setItem(QUICKBAR_STORAGE_KEY, JSON.stringify(quickbarOrder));
+  } catch (error) {
+    console.error('Failed to save quickbar:', error);
+  }
+}
+
+async function renderModelPreview(name) {
+  const previewScene = new THREE.Scene();
+  previewScene.add(new THREE.HemisphereLight(0xdde8ff, 0x303744, 2.5));
+  const previewSun = new THREE.DirectionalLight(0xfff2d9, 2);
+  previewSun.position.set(3, 5, 4);
+  previewScene.add(previewSun);
+
+  const model = await spawnModel(name, {});
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  model.position.sub(center);
+  previewScene.add(model);
+
+  const radius = Math.max(size.length() / 2, 0.1);
+  const previewCamera = new THREE.PerspectiveCamera(32, 136 / 80, 0.01, radius * 10);
+  previewCamera.position.set(radius * 2.5, radius * 2, radius * 2.5);
+  previewCamera.lookAt(0, 0, 0);
+  previewRenderer.render(previewScene, previewCamera);
+  return previewRenderer.domElement.toDataURL('image/png');
+}
+
+function getModelPreview(name) {
+  if (previewRequests.has(name)) return previewRequests.get(name);
+  const request = previewQueue.then(() => renderModelPreview(name));
+  previewQueue = request.catch(() => {});
+  const cachedRequest = request.catch((error) => {
+    previewRequests.delete(name);
+    throw error;
+  });
+  previewRequests.set(name, cachedRequest);
+  return cachedRequest;
+}
+
+function createQuickbarItem(name) {
+  const button = document.createElement('button');
+  button.className = 'quickbar-item';
+  button.dataset.name = name;
+  button.title = name;
+  button.setAttribute('aria-label', `Select ${name}`);
+  button.addEventListener('click', () => selectBrush(name));
+
+  const preview = document.createElement('img');
+  preview.className = 'quickbar-preview';
+  preview.alt = '';
+  getModelPreview(name)
+    .then((url) => {
+      if (preview.isConnected) preview.src = url;
+    })
+    .catch((error) => console.error(`Failed to render preview for ${name}:`, error));
+  button.appendChild(preview);
+
+  const label = document.createElement('span');
+  label.className = 'quickbar-label';
+  label.textContent = name.slice(name.indexOf('/') + 1);
+  button.appendChild(label);
+  if (name === currentBrush) button.classList.add('selected');
+  return button;
+}
+
+function syncQuickbar() {
+  const availableNames = new Set(map.entities.map((entity) => entity.name));
+  for (const entity of map.entities) {
+    if (!quickbarOrder.includes(entity.name)) quickbarOrder.push(entity.name);
+  }
+  saveQuickbarOrder();
+  const visibleNames = quickbarOrder.filter((name) => availableNames.has(name));
+  quickbar.replaceChildren(...visibleNames.map(createQuickbarItem));
+}
 
 // --- ghost / cell cursor ---------------------------------------------------
 
@@ -434,6 +540,7 @@ function placeAtHover() {
     });
   }
   mapRevision += 1;
+  syncQuickbar();
 }
 
 function eraseAtHover() {
@@ -446,6 +553,7 @@ function eraseAtHover() {
   recordUndoState();
   removeEntity(target.id);
   mapRevision += 1;
+  syncQuickbar();
   hoverEntityId = null;
   hoverOutline.visible = false;
 }
