@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { spawnModel, getModelHeight, setMaxAnisotropy } from './assets.js';
+import { spawnModel, getModelBounds, setMaxAnisotropy } from './assets.js';
 import { buildCategories, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
 import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
@@ -15,12 +15,6 @@ const ERASE = '__erase';
 // separately-placed bottom/middle/top pieces of a tower correctly.
 const HEIGHT_UNIT = TOWER_PIECE_HEIGHT;
 
-// Props (anything that isn't a ground tile) stack on top of y=0, which is
-// where every kit's ground tile top surface lands (see grid.js/assets.js).
-function propY(heightStep) {
-  return heightStep * HEIGHT_UNIT;
-}
-
 function cellKey(col, row) {
   return `${col},${row}`;
 }
@@ -29,10 +23,6 @@ function getCellStackBase(col, row) {
   const props = (cellIndex.get(cellKey(col, row)) || []).filter((entity) => !entity.ground);
   if (props.length === 0) return 0;
   return Math.max(...props.map((entity) => entity.heightStep ?? 0)) + 1;
-}
-
-function getPendingStackHeight(col, row) {
-  return getCellStackBase(col, row) + pendingHeight;
 }
 
 const canvas = document.getElementById('scene');
@@ -112,7 +102,16 @@ let map = loadMap() || createEmptyMap(15, 15, TILE_SIZE);
 map.tileSize = TILE_SIZE;
 let cellIndex = new Map();
 const objectsById = new Map();
+const cellStackTops = new Map();
 let renderGeneration = 0;
+let mapEditQueue = Promise.resolve();
+
+function enqueueMapEdit(operation) {
+  mapEditQueue = mapEditQueue
+    .then(operation)
+    .catch((error) => console.error('Failed to edit map:', error));
+  return mapEditQueue;
+}
 
 function rebuildIndex() {
   cellIndex.clear();
@@ -123,9 +122,42 @@ function rebuildIndex() {
   }
 }
 
+async function layoutCellStack(col, row) {
+  const key = cellKey(col, row);
+  const props = (cellIndex.get(key) || []).filter((entity) => !entity.ground);
+  const bounds = await Promise.all(props.map((entity) => getModelBounds(entity.name)));
+  let top = 0;
+  let legacyMaxStep = -1;
+  props.forEach((entity, index) => {
+    const savedStep = entity.heightStep ?? legacyMaxStep + 1;
+    if (entity.stackOffset === undefined) {
+      entity.stackOffset = savedStep - (legacyMaxStep + 1);
+    }
+    legacyMaxStep = Math.max(legacyMaxStep, savedStep);
+    const baseY = top + entity.stackOffset * HEIGHT_UNIT;
+    entity.stackY = baseY - bounds[index].minY;
+    top = Math.max(top, entity.stackY + bounds[index].maxY);
+    const object = objectsById.get(entity.id);
+    if (object) object.position.y = entity.stackY;
+  });
+  cellStackTops.set(key, top);
+}
+
+async function layoutAllStacks() {
+  cellStackTops.clear();
+  await Promise.all([...cellIndex.keys()].map((key) => {
+    const [col, row] = key.split(',').map(Number);
+    return layoutCellStack(col, row);
+  }));
+}
+
+function getPendingStackY(col, row) {
+  return (cellStackTops.get(cellKey(col, row)) || 0) + pendingHeight * HEIGHT_UNIT;
+}
+
 async function renderEntity(entity, generation = renderGeneration) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
-  const y = entity.ground ? -(await getModelHeight(entity.name)) : propY(entity.heightStep);
+  const y = entity.ground ? -(await getModelBounds(entity.name)).maxY : (entity.stackY ?? 0);
   const object = await spawnModel(entity.name, {
     position: { x, y, z },
     rotationY: entity.rotationStep * (Math.PI / 2),
@@ -151,6 +183,8 @@ async function loadEntireMap() {
   objectsById.clear();
   rebuildIndex();
   syncQuickbar();
+  await layoutAllStacks();
+  if (generation !== renderGeneration) return;
   await Promise.all(map.entities.map((entity) => renderEntity(entity, generation)));
 }
 
@@ -396,7 +430,8 @@ scene.add(cellCursor);
 
 let ghostObject = null;
 let ghostBrushName = null;
-let ghostGroundY = 0;
+let ghostMinY = 0;
+let ghostMaxY = 0;
 
 // Keeps the ghost glued to the last known hover cell. Called both on
 // pointer move and right after an async model load resolves — without the
@@ -410,7 +445,9 @@ function syncGhostTransform() {
   }
   const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
   ghostObject.visible = true;
-  const y = isGroundModel(currentBrush) ? ghostGroundY : propY(getPendingStackHeight(hoverCell.col, hoverCell.row));
+  const y = isGroundModel(currentBrush)
+    ? -ghostMaxY
+    : getPendingStackY(hoverCell.col, hoverCell.row) - ghostMinY;
   ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
 }
@@ -422,9 +459,9 @@ async function ensureGhost(name) {
     ghostObject = null;
   }
   ghostBrushName = name;
-  const [object, groundHeight] = await Promise.all([
+  const [object, bounds] = await Promise.all([
     spawnModel(name, {}),
-    isGroundModel(name) ? getModelHeight(name) : Promise.resolve(0),
+    getModelBounds(name),
   ]);
   if (ghostBrushName !== name) return; // brush changed again while loading
   object.traverse((child) => {
@@ -436,7 +473,8 @@ async function ensureGhost(name) {
       child.receiveShadow = false;
     }
   });
-  ghostGroundY = -groundHeight;
+  ghostMinY = bounds.minY;
+  ghostMaxY = bounds.maxY;
   ghostObject = object;
   ghostObject.visible = false;
   scene.add(object);
@@ -520,38 +558,45 @@ function updateHover(clientX, clientY) {
 
 // --- placing / erasing ------------------------------------------------------
 
-function placeAtHover() {
-  if (!hoverCell || !currentBrush || currentBrush === ERASE) return;
+async function placeEntity({ cell, brush, rotation, heightOffset }) {
+  if (!cell || !brush || brush === ERASE) return;
   recordUndoState();
-  const { col, row } = hoverCell;
-  const ground = isGroundModel(currentBrush);
+  const { col, row } = cell;
+  const ground = isGroundModel(brush);
   if (ground) {
     const existingGround = (cellIndex.get(cellKey(col, row)) || []).find((e) => e.ground);
     if (existingGround) removeEntity(existingGround.id);
-    addEntity({ name: currentBrush, ground: true, col, row, rotationStep: pendingRotation, heightStep: 0 });
+    addEntity({ name: brush, ground: true, col, row, rotationStep: rotation, heightStep: 0 });
   } else {
+    const bounds = await getModelBounds(brush);
+    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * HEIGHT_UNIT;
     addEntity({
-      name: currentBrush,
+      name: brush,
       ground: false,
       col,
       row,
-      rotationStep: pendingRotation,
-      heightStep: getPendingStackHeight(col, row),
+      rotationStep: rotation,
+      heightStep: getCellStackBase(col, row) + heightOffset,
+      stackOffset: heightOffset,
+      stackY: baseY - bounds.minY,
     });
+    await layoutCellStack(col, row);
   }
   mapRevision += 1;
   syncQuickbar();
 }
 
-function eraseAtHover() {
-  if (!hoverCell) return;
-  const entities = cellIndex.get(cellKey(hoverCell.col, hoverCell.row)) || [];
+async function eraseEntity({ cell, entityId }) {
+  if (!cell) return;
+  const entities = cellIndex.get(cellKey(cell.col, cell.row)) || [];
   if (entities.length === 0) return;
   const props = entities.filter((e) => !e.ground);
-  const target = entities.find((entity) => entity.id === hoverEntityId)
-    || (props.length ? props[props.length - 1] : entities[entities.length - 1]);
+  const selectedTarget = entities.find((entity) => entity.id === entityId);
+  if (entityId !== null && !selectedTarget) return;
+  const target = selectedTarget || (props.length ? props[props.length - 1] : entities[entities.length - 1]);
   recordUndoState();
   removeEntity(target.id);
+  await layoutCellStack(cell.col, cell.row);
   mapRevision += 1;
   syncQuickbar();
   hoverEntityId = null;
@@ -566,8 +611,19 @@ canvas.addEventListener('pointermove', (event) => {
 canvas.addEventListener('click', (event) => {
   if (walker.active) return;
   updateHover(event.clientX, event.clientY);
-  if (currentBrush === ERASE) eraseAtHover();
-  else placeAtHover();
+  const cell = hoverCell ? { ...hoverCell } : null;
+  if (currentBrush === ERASE) {
+    const request = { cell, entityId: hoverEntityId };
+    enqueueMapEdit(() => eraseEntity(request));
+  } else {
+    const request = {
+      cell,
+      brush: currentBrush,
+      rotation: pendingRotation,
+      heightOffset: pendingHeight,
+    };
+    enqueueMapEdit(() => placeEntity(request));
+  }
 });
 
 window.addEventListener('keydown', (event) => {
@@ -580,7 +636,7 @@ window.addEventListener('keydown', (event) => {
   ) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'z') {
     event.preventDefault();
-    undoLastEdit();
+    enqueueMapEdit(undoLastEdit);
     return;
   }
   if (event.key === 'r' || event.key === 'R') {
@@ -606,7 +662,7 @@ document.getElementById('action-save').addEventListener('click', () => {
   saveMap(map);
 });
 
-undoBtn.addEventListener('click', undoLastEdit);
+undoBtn.addEventListener('click', () => enqueueMapEdit(undoLastEdit));
 
 document.getElementById('action-export').addEventListener('click', () => {
   exportMapFile(map);
@@ -621,14 +677,16 @@ importInput.addEventListener('change', async () => {
   const startingRevision = mapRevision;
   try {
     const importedMap = await importMapFile(file);
-    if (requestId !== importRequestId || startingRevision !== mapRevision) {
-      throw new Error('Map changed before import completed');
-    }
-    recordUndoState();
-    map = importedMap;
-    map.tileSize = TILE_SIZE;
-    mapRevision += 1;
-    await loadEntireMap();
+    await enqueueMapEdit(async () => {
+      if (requestId !== importRequestId || startingRevision !== mapRevision) {
+        throw new Error('Map changed before import completed');
+      }
+      recordUndoState();
+      map = importedMap;
+      map.tileSize = TILE_SIZE;
+      mapRevision += 1;
+      await loadEntireMap();
+    });
   } catch (err) {
     console.error('Failed to import map:', err);
   }
@@ -636,10 +694,12 @@ importInput.addEventListener('change', async () => {
 
 document.getElementById('action-clear').addEventListener('click', () => {
   if (!confirm('Clear the entire map?')) return;
-  recordUndoState();
-  map = createEmptyMap(map.width, map.depth, TILE_SIZE);
-  mapRevision += 1;
-  loadEntireMap();
+  enqueueMapEdit(async () => {
+    recordUndoState();
+    map = createEmptyMap(map.width, map.depth, TILE_SIZE);
+    mapRevision += 1;
+    await loadEntireMap();
+  });
 });
 
 // The walker drives its own perspective camera, so the orthographic build
@@ -693,7 +753,7 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-loadEntireMap();
+enqueueMapEdit(loadEntireMap);
 
 const clock = new THREE.Clock();
 function animate() {

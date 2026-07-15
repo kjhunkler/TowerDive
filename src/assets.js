@@ -81,19 +81,27 @@ export function loadModel(name) {
   return promise;
 }
 
-const heightCache = new Map();
+const boundsCache = new Map();
+
+export async function getModelBounds(name) {
+  if (boundsCache.has(name)) return boundsCache.get(name);
+  const template = await loadModel(name);
+  const box = new Box3().setFromObject(template);
+  const bounds = {
+    minY: box.min.y,
+    maxY: box.max.y,
+    height: box.max.y - box.min.y,
+  };
+  boundsCache.set(name, bounds);
+  return bounds;
+}
 
 // Kits ship ground tiles at different slab thicknesses (e.g. a tower-defense
 // grass tile is 0.2 units thick, a fantasy-town road is 0.025) — measuring
 // each model's own bounding box lets callers sink a ground tile so its top
 // surface lands at a consistent world height regardless of source kit.
 export async function getModelHeight(name) {
-  if (heightCache.has(name)) return heightCache.get(name);
-  const template = await loadModel(name);
-  const box = new Box3().setFromObject(template);
-  const height = box.max.y - box.min.y;
-  heightCache.set(name, height);
-  return height;
+  return (await getModelBounds(name)).height;
 }
 
 export async function spawnModel(name, { position, rotationY = 0, scale = 1 } = {}) {
