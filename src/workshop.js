@@ -166,6 +166,7 @@ async function renderEntity(entity, generation = renderGeneration) {
   object.userData.entityId = entity.id;
   mapGroup.add(object);
   objectsById.set(entity.id, object);
+  if (entity.id === selectedEntityId) updateSelectionOutline();
 }
 
 function removeEntityObject(id) {
@@ -202,6 +203,11 @@ function removeEntity(id) {
   map.entities.splice(idx, 1);
   rebuildIndex();
   removeEntityObject(id);
+  if (id === selectedEntityId) {
+    selectedEntityId = null;
+    moveEntityId = null;
+    selectionOutline.visible = false;
+  }
 }
 
 // --- edit history -----------------------------------------------------------
@@ -231,6 +237,7 @@ async function undoLastEdit() {
   map = previous;
   map.tileSize = TILE_SIZE;
   mapRevision += 1;
+  clearEntitySelection();
   updateUndoButton();
   await loadEntireMap();
 }
@@ -240,9 +247,19 @@ async function undoLastEdit() {
 let currentBrush = null;
 let pendingRotation = 0;
 let pendingHeight = 0;
+let selectedEntityId = null;
+let moveEntityId = null;
+let copyMode = false;
 
 function updateBrushStatus() {
-  if (!currentBrush) {
+  const selectedEntity = map.entities.find((entity) => entity.id === selectedEntityId);
+  if (moveEntityId !== null && selectedEntity) {
+    brushNameEl.textContent = `move: ${selectedEntity.name}`;
+    brushDetailEl.textContent = 'click destination · Esc cancel';
+  } else if (!currentBrush && selectedEntity) {
+    brushNameEl.textContent = `selected: ${selectedEntity.name}`;
+    brushDetailEl.textContent = 'Del delete · C copy · M move · [ ] height';
+  } else if (!currentBrush) {
     brushNameEl.textContent = 'no tool selected';
     brushDetailEl.textContent = '';
   } else if (currentBrush === ERASE) {
@@ -251,12 +268,16 @@ function updateBrushStatus() {
   } else {
     brushNameEl.textContent = currentBrush;
     const offset = pendingHeight === 0 ? 'auto-stack' : `auto-stack ${pendingHeight > 0 ? '+' : ''}${pendingHeight}`;
-    brushDetailEl.textContent = `rot ${pendingRotation * 90}° · ${offset}`;
+    brushDetailEl.textContent = `${copyMode ? 'copy · ' : ''}rot ${pendingRotation * 90}° · ${offset}`;
   }
 }
 
 function selectBrush(name) {
   currentBrush = name;
+  moveEntityId = null;
+  copyMode = false;
+  selectedEntityId = null;
+  selectionOutline.visible = false;
   pendingRotation = 0;
   pendingHeight = 0;
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
@@ -268,8 +289,44 @@ function selectBrush(name) {
 
 function deselectBrush() {
   currentBrush = null;
+  moveEntityId = null;
+  copyMode = false;
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
   document.querySelectorAll('.quickbar-item.selected').forEach((el) => el.classList.remove('selected'));
+  updateGhost();
+  updateBrushStatus();
+}
+
+function selectEntity(id) {
+  selectedEntityId = map.entities.some((entity) => entity.id === id) ? id : null;
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+function clearEntitySelection() {
+  selectedEntityId = null;
+  moveEntityId = null;
+  selectionOutline.visible = false;
+  updateBrushStatus();
+}
+
+function copySelectedEntity() {
+  const entity = map.entities.find((candidate) => candidate.id === selectedEntityId);
+  if (!entity) return;
+  selectBrush(entity.name);
+  pendingRotation = entity.rotationStep ?? 0;
+  copyMode = true;
+  syncGhostTransform();
+  updateBrushStatus();
+}
+
+function beginMoveSelectedEntity() {
+  if (!map.entities.some((entity) => entity.id === selectedEntityId)) return;
+  currentBrush = null;
+  copyMode = false;
+  moveEntityId = selectedEntityId;
+  document.querySelectorAll('.palette-item.selected, .quickbar-item.selected')
+    .forEach((element) => element.classList.remove('selected'));
   updateGhost();
   updateBrushStatus();
 }
@@ -417,6 +474,22 @@ function syncQuickbar() {
   quickbar.replaceChildren(...visibleNames.map(createQuickbarItem));
 }
 
+quickbar.addEventListener('wheel', (event) => {
+  const items = [...quickbar.querySelectorAll('.quickbar-item')];
+  if (items.length === 0) return;
+  event.preventDefault();
+  const selectedEntity = map.entities.find((entity) => entity.id === selectedEntityId);
+  const activeName = currentBrush || selectedEntity?.name;
+  const activeIndex = items.findIndex((item) => item.dataset.name === activeName);
+  const direction = (event.deltaY || event.deltaX) > 0 ? 1 : -1;
+  const nextIndex = activeIndex === -1
+    ? (direction > 0 ? 0 : items.length - 1)
+    : (activeIndex + direction + items.length) % items.length;
+  const nextItem = items[nextIndex];
+  selectBrush(nextItem.dataset.name);
+  nextItem.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}, { passive: false });
+
 // --- ghost / cell cursor ---------------------------------------------------
 
 const cellCursor = new THREE.Mesh(
@@ -498,8 +571,21 @@ hoverOutline.material.opacity = 0.9;
 hoverOutline.renderOrder = 10;
 hoverOutline.visible = false;
 scene.add(hoverOutline);
+const selectionOutline = new THREE.BoxHelper(undefined, 0x66ff99);
+selectionOutline.material.depthTest = false;
+selectionOutline.material.transparent = true;
+selectionOutline.material.opacity = 1;
+selectionOutline.renderOrder = 11;
+selectionOutline.visible = false;
+scene.add(selectionOutline);
 let hoverCell = null;
 let hoverEntityId = null;
+
+function updateSelectionOutline() {
+  const object = objectsById.get(selectedEntityId);
+  selectionOutline.visible = Boolean(object);
+  if (object) selectionOutline.setFromObject(object);
+}
 
 function getEntityIdFromIntersection(intersection) {
   let object = intersection?.object;
@@ -603,6 +689,70 @@ async function eraseEntity({ cell, entityId }) {
   hoverOutline.visible = false;
 }
 
+async function deleteSelectedEntity(entityId) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity) return;
+  recordUndoState();
+  removeEntity(entity.id);
+  await layoutCellStack(entity.col, entity.row);
+  mapRevision += 1;
+  syncQuickbar();
+  clearEntitySelection();
+}
+
+async function moveSelectedEntity({ entityId, cell }) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity || !cell) return;
+  if (entity.col === cell.col && entity.row === cell.row) {
+    moveEntityId = null;
+    updateBrushStatus();
+    return;
+  }
+
+  recordUndoState();
+  const oldCell = { col: entity.col, row: entity.row };
+  map.entities.splice(map.entities.indexOf(entity), 1);
+  rebuildIndex();
+
+  if (entity.ground) {
+    const destinationGround = (cellIndex.get(cellKey(cell.col, cell.row)) || [])
+      .find((candidate) => candidate.ground);
+    if (destinationGround) removeEntity(destinationGround.id);
+  }
+
+  entity.col = cell.col;
+  entity.row = cell.row;
+  entity.heightStep = entity.ground ? 0 : getCellStackBase(cell.col, cell.row);
+  entity.stackOffset = 0;
+  map.entities.push(entity);
+  rebuildIndex();
+
+  const { x, z } = cellToWorld(cell.col, cell.row, map.width, map.depth, TILE_SIZE);
+  const object = objectsById.get(entity.id);
+  if (object) object.position.set(x, object.position.y, z);
+  await Promise.all([
+    layoutCellStack(oldCell.col, oldCell.row),
+    layoutCellStack(cell.col, cell.row),
+  ]);
+  mapRevision += 1;
+  moveEntityId = null;
+  syncQuickbar();
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+async function adjustSelectedHeight(entityId, delta) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity || entity.ground) return;
+  recordUndoState();
+  entity.stackOffset = (entity.stackOffset ?? 0) + delta;
+  entity.heightStep = (entity.heightStep ?? 0) + delta;
+  await layoutCellStack(entity.col, entity.row);
+  mapRevision += 1;
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
 canvas.addEventListener('pointermove', (event) => {
   if (walker.active) return;
   updateHover(event.clientX, event.clientY);
@@ -612,7 +762,12 @@ canvas.addEventListener('click', (event) => {
   if (walker.active) return;
   updateHover(event.clientX, event.clientY);
   const cell = hoverCell ? { ...hoverCell } : null;
-  if (currentBrush === ERASE) {
+  if (moveEntityId !== null) {
+    const request = { cell, entityId: moveEntityId };
+    enqueueMapEdit(() => moveSelectedEntity(request));
+  } else if (!currentBrush) {
+    selectEntity(hoverEntityId);
+  } else if (currentBrush === ERASE) {
     const request = { cell, entityId: hoverEntityId };
     enqueueMapEdit(() => eraseEntity(request));
   } else {
@@ -639,20 +794,47 @@ window.addEventListener('keydown', (event) => {
     enqueueMapEdit(undoLastEdit);
     return;
   }
+  if ((event.key === 'Delete' || event.key === 'Backspace') && selectedEntityId !== null) {
+    event.preventDefault();
+    const entityId = selectedEntityId;
+    enqueueMapEdit(() => deleteSelectedEntity(entityId));
+    return;
+  }
+  if (event.key.toLocaleLowerCase() === 'c' && selectedEntityId !== null) {
+    event.preventDefault();
+    copySelectedEntity();
+    return;
+  }
+  if (event.key.toLocaleLowerCase() === 'm' && selectedEntityId !== null) {
+    event.preventDefault();
+    beginMoveSelectedEntity();
+    return;
+  }
   if (event.key === 'r' || event.key === 'R') {
     pendingRotation = (pendingRotation + 1) % 4;
     updateBrushStatus();
     syncGhostTransform();
   } else if (event.key === '[') {
-    pendingHeight -= 1;
-    updateBrushStatus();
-    syncGhostTransform();
+    if (selectedEntityId !== null && !currentBrush) {
+      const entityId = selectedEntityId;
+      enqueueMapEdit(() => adjustSelectedHeight(entityId, -1));
+    } else {
+      pendingHeight -= 1;
+      updateBrushStatus();
+      syncGhostTransform();
+    }
   } else if (event.key === ']') {
-    pendingHeight += 1;
-    updateBrushStatus();
-    syncGhostTransform();
+    if (selectedEntityId !== null && !currentBrush) {
+      const entityId = selectedEntityId;
+      enqueueMapEdit(() => adjustSelectedHeight(entityId, 1));
+    } else {
+      pendingHeight += 1;
+      updateBrushStatus();
+      syncGhostTransform();
+    }
   } else if (event.key === 'Escape') {
-    deselectBrush();
+    if (currentBrush || moveEntityId !== null) deselectBrush();
+    else clearEntitySelection();
   }
 });
 
@@ -685,6 +867,7 @@ importInput.addEventListener('change', async () => {
       map = importedMap;
       map.tileSize = TILE_SIZE;
       mapRevision += 1;
+      clearEntitySelection();
       await loadEntireMap();
     });
   } catch (err) {
@@ -698,6 +881,7 @@ document.getElementById('action-clear').addEventListener('click', () => {
     recordUndoState();
     map = createEmptyMap(map.width, map.depth, TILE_SIZE);
     mapRevision += 1;
+    clearEntitySelection();
     await loadEntireMap();
   });
 });
