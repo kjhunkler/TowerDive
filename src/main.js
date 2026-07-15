@@ -72,16 +72,17 @@ async function buildLevel() {
       );
     }
   }
-  await Promise.all(tilePromises);
-
-  await buildTower(world, tileWorldPosition(2, 1), 'round');
-  await buildTower(world, tileWorldPosition(4, 3), 'square');
-  await buildTower(world, tileWorldPosition(6, 1), 'round');
+  await Promise.all([
+    ...tilePromises,
+    buildTower(world, tileWorldPosition(2, 1), 'round'),
+    buildTower(world, tileWorldPosition(4, 3), 'square'),
+    buildTower(world, tileWorldPosition(6, 1), 'round'),
+  ]);
 }
 
 async function spawnEnemy() {
   const waypoints = buildPathWaypoints();
-  const enemy = await spawnModel('enemy-ufo-a', { position: waypoints[0], scale: 1.2 });
+  const enemy = await spawnModel('enemy-ufo-a', { position: waypoints[0], scale: 0.9 });
   world.add(enemy);
   return { mesh: enemy, waypoints, segment: 0, t: 0 };
 }
@@ -102,14 +103,14 @@ function updateEnemy(enemy, deltaSeconds) {
   }
 
   const t = enemy.t;
-  enemy.mesh.position.set(from.x + (to.x - from.x) * t, 0.4, from.z + (to.z - from.z) * t);
+  enemy.mesh.position.set(from.x + (to.x - from.x) * t, 0.3, from.z + (to.z - from.z) * t);
   enemy.mesh.rotation.y = Math.atan2(to.x - from.x, to.z - from.z);
 }
 
 function resize() {
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const viewSize = 12;
+  const viewSize = 7;
   const aspect = width / height;
   camera.left = (-viewSize * aspect) / 2;
   camera.right = (viewSize * aspect) / 2;

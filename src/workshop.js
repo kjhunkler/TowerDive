@@ -5,11 +5,18 @@ import { buildCategories, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
 import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
 import { createWalkController } from './walkController.js';
+import { TILE_SIZE, TILE_TOP } from './grid.js';
+import { TOWER_PIECE_HEIGHT } from './tower.js';
 
 const ERASE = '__erase';
 // Matches tower.js's stacking step, so nudging height lines up the
 // separately-placed bottom/middle/top pieces of a tower correctly.
-const HEIGHT_UNIT = 0.9;
+const HEIGHT_UNIT = TOWER_PIECE_HEIGHT;
+
+// Props (anything that isn't a ground tile) sit on top of the tile slab.
+function propY(heightStep) {
+  return TILE_TOP + heightStep * HEIGHT_UNIT;
+}
 
 const canvas = document.getElementById('scene');
 const paletteToolRow = document.getElementById('palette-tool-row');
@@ -32,9 +39,14 @@ const ISO_ANGLE = Math.atan(1 / Math.sqrt(2));
 const camera = new THREE.OrthographicCamera();
 camera.near = -100;
 camera.far = 100;
-const CAMERA_DISTANCE = 30;
+const CAMERA_DISTANCE = 20;
 camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE * Math.tan(ISO_ANGLE), CAMERA_DISTANCE);
 camera.lookAt(0, 0, 0);
+
+// Explore mode needs a perspective projection: mouse-look through the
+// orthographic build camera has no vanishing point, so turning your head
+// reads as "the map spins" instead of first-person looking.
+const exploreCamera = new THREE.PerspectiveCamera(70, 1, 0.01, 200);
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
@@ -58,12 +70,14 @@ scene.add(sunLight);
 const mapGroup = new THREE.Group();
 scene.add(mapGroup);
 
-const walker = createWalkController({ camera, canvas });
+const walker = createWalkController({ camera: exploreCamera, canvas });
 
 // --- map data -----------------------------------------------------------
 
-let map = loadMap() || createEmptyMap(15, 15, 2);
-const TILE_SIZE = map.tileSize;
+let map = loadMap() || createEmptyMap(15, 15, TILE_SIZE);
+// Cell spacing is dictated by the models (1x1 tiles), not the stored map —
+// maps saved before the spacing fix carry a stale tileSize of 2.
+map.tileSize = TILE_SIZE;
 let cellIndex = new Map();
 const objectsById = new Map();
 
@@ -79,7 +93,7 @@ function rebuildIndex() {
 async function renderEntity(entity) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
   const object = await spawnModel(entity.name, {
-    position: { x, y: entity.heightStep * HEIGHT_UNIT, z },
+    position: { x, y: entity.ground ? 0 : propY(entity.heightStep), z },
     rotationY: entity.rotationStep * (Math.PI / 2),
   });
   if (!map.entities.includes(entity)) return; // removed while loading
@@ -207,7 +221,7 @@ function syncGhostTransform() {
   }
   const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
   ghostObject.visible = true;
-  ghostObject.position.set(x, pendingHeight * HEIGHT_UNIT, z);
+  ghostObject.position.set(x, isGroundModel(currentBrush) ? 0 : propY(pendingHeight), z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
 }
 
@@ -362,38 +376,28 @@ document.getElementById('action-clear').addEventListener('click', () => {
   loadEntireMap();
 });
 
+// The walker drives its own perspective camera, so the orthographic build
+// camera (and its orbit controls) are untouched — exiting just switches
+// which camera renders.
 function exitExplore() {
   controls.enabled = true;
-  camera.position.copy(preExploreState.position);
-  camera.quaternion.copy(preExploreState.quaternion);
-  camera.zoom = preExploreState.zoom;
-  camera.updateProjectionMatrix();
-  controls.target.copy(preExploreState.target);
-  controls.update();
   exploreHint.hidden = true;
   exploreBtn.classList.remove('active');
   exploreBtn.textContent = '\u{1F6F8} Explore';
 }
 
-let preExploreState = null;
 exploreBtn.addEventListener('click', () => {
   if (walker.active) {
     walker.exit();
     return;
   }
-  preExploreState = {
-    position: camera.position.clone(),
-    quaternion: camera.quaternion.clone(),
-    zoom: camera.zoom,
-    target: controls.target.clone(),
-  };
   controls.enabled = false;
   cellCursor.visible = false;
   if (ghostObject) ghostObject.visible = false;
-  const eyeHeight = TILE_SIZE * 0.4;
+  // Roughly human-scale for 1-unit tiles: eyes ~0.5 units up, brisk walk.
   walker.enter(mapGroup, exitExplore, {
-    eyeHeight,
-    moveSpeed: eyeHeight * 2.2,
+    eyeHeight: TILE_SIZE * 0.5,
+    moveSpeed: TILE_SIZE * 2.5,
     startPosition: { x: 0, z: 0 },
   });
   exploreHint.hidden = false;
@@ -406,13 +410,15 @@ exploreBtn.addEventListener('click', () => {
 function resize() {
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const viewSize = 22;
+  const viewSize = 13;
   const aspect = width / height;
   camera.left = (-viewSize * aspect) / 2;
   camera.right = (viewSize * aspect) / 2;
   camera.top = viewSize / 2;
   camera.bottom = -viewSize / 2;
   camera.updateProjectionMatrix();
+  exploreCamera.aspect = aspect;
+  exploreCamera.updateProjectionMatrix();
   renderer.setSize(width, height);
 }
 window.addEventListener('resize', resize);
@@ -428,7 +434,7 @@ function animate() {
   } else {
     controls.update();
   }
-  renderer.render(scene, camera);
+  renderer.render(scene, walker.active ? exploreCamera : camera);
   requestAnimationFrame(animate);
 }
 animate();

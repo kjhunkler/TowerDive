@@ -1,4 +1,8 @@
-export const TILE_SIZE = 2;
+// Kenney's tiles are exactly 1x1 world units (see the POSITION bounds in
+// any tile .glb), so cells must be spaced 1 apart for tiles to connect
+// seamlessly. The tile slab itself is 0.2 high — props sit on TILE_TOP.
+export const TILE_SIZE = 1;
+export const TILE_TOP = 0.2;
 
 // A single straight lane, 8 tiles long, running along +x.
 // 'path' cells render the road tile set; everything else is grass.

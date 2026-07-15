@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'towerdive-workshop-map-v1';
 
-export function createEmptyMap(width = 15, depth = 15, tileSize = 2) {
+export function createEmptyMap(width = 15, depth = 15, tileSize = 1) {
   const entities = [];
   let id = 0;
   for (let col = 0; col < width; col++) {
