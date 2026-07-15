@@ -7,13 +7,9 @@ import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from '
 import { createWalkController } from './walkController.js';
 import { createWeaponController } from './weaponController.js';
 import { TILE_SIZE } from './grid.js';
-import { TOWER_PIECE_HEIGHT } from './tower.js';
 import { applySkybox, SKYBOXES } from './skybox.js';
 
 const ERASE = '__erase';
-// Matches tower.js's stacking step, so nudging height lines up the
-// separately-placed bottom/middle/top pieces of a tower correctly.
-const HEIGHT_UNIT = TOWER_PIECE_HEIGHT;
 
 function cellKey(col, row) {
   return `${col},${row}`;
@@ -134,7 +130,7 @@ async function layoutCellStack(col, row) {
       entity.stackOffset = savedStep - (legacyMaxStep + 1);
     }
     legacyMaxStep = Math.max(legacyMaxStep, savedStep);
-    const baseY = top + entity.stackOffset * HEIGHT_UNIT;
+    const baseY = top + entity.stackOffset * bounds[index].height;
     entity.stackY = baseY - bounds[index].minY;
     top = Math.max(top, entity.stackY + bounds[index].maxY);
     const object = objectsById.get(entity.id);
@@ -151,8 +147,8 @@ async function layoutAllStacks() {
   }));
 }
 
-function getPendingStackY(col, row) {
-  return (cellStackTops.get(cellKey(col, row)) || 0) + pendingHeight * HEIGHT_UNIT;
+function getPendingStackY(col, row, modelHeight) {
+  return (cellStackTops.get(cellKey(col, row)) || 0) + pendingHeight * modelHeight;
 }
 
 async function renderEntity(entity, generation = renderGeneration) {
@@ -505,6 +501,7 @@ let ghostObject = null;
 let ghostBrushName = null;
 let ghostMinY = 0;
 let ghostMaxY = 0;
+let ghostHeight = 0;
 
 // Keeps the ghost glued to the last known hover cell. Called both on
 // pointer move and right after an async model load resolves — without the
@@ -520,7 +517,7 @@ function syncGhostTransform() {
   ghostObject.visible = true;
   const y = isGroundModel(currentBrush)
     ? -ghostMaxY
-    : getPendingStackY(hoverCell.col, hoverCell.row) - ghostMinY;
+    : getPendingStackY(hoverCell.col, hoverCell.row, ghostHeight) - ghostMinY;
   ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
 }
@@ -548,6 +545,7 @@ async function ensureGhost(name) {
   });
   ghostMinY = bounds.minY;
   ghostMaxY = bounds.maxY;
+  ghostHeight = bounds.height;
   ghostObject = object;
   ghostObject.visible = false;
   scene.add(object);
@@ -655,7 +653,7 @@ async function placeEntity({ cell, brush, rotation, heightOffset }) {
     addEntity({ name: brush, ground: true, col, row, rotationStep: rotation, heightStep: 0 });
   } else {
     const bounds = await getModelBounds(brush);
-    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * HEIGHT_UNIT;
+    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * bounds.height;
     addEntity({
       name: brush,
       ground: false,
