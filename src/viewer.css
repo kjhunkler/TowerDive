@@ -72,3 +72,36 @@
 #viewer-next {
   right: 16px;
 }
+
+#viewer-walk {
+  pointer-events: auto;
+  margin-top: 4px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(232, 236, 245, 0.14);
+  color: #e8ecf5;
+  font-size: 0.8rem;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+#viewer-walk:hover {
+  background: rgba(232, 236, 245, 0.24);
+}
+
+#viewer-walk.active {
+  background: rgba(120, 200, 150, 0.35);
+}
+
+#walk-hint {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #e8ecf5;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}

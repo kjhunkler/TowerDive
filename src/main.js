@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { spawnModel } from './assets.js';
+import { spawnModel, setMaxAnisotropy } from './assets.js';
 import { GRID_WIDTH, GRID_DEPTH, tileWorldPosition, tileKindAt, buildPathWaypoints } from './grid.js';
 import { buildTower } from './tower.js';
 
@@ -17,6 +17,7 @@ const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
+setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1f2e);
@@ -38,10 +39,15 @@ controls.enablePan = false;
 controls.minPolarAngle = Math.PI / 6;
 controls.maxPolarAngle = Math.PI / 2.1;
 
-const hemiLight = new THREE.HemisphereLight(0xbdd6ff, 0x2a2f3a, 1.1);
+// These models are built from many small hard-edged facets; a strong
+// single directional light makes each one catch the light differently,
+// which reads as fine rib-like lines on curved shapes. Leaning on
+// ambient/hemisphere light instead keeps some shape-defining shading
+// without that harsh facet-to-facet contrast.
+const hemiLight = new THREE.HemisphereLight(0xbdd6ff, 0x2a2f3a, 1.8);
 scene.add(hemiLight);
 
-const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.4);
+const sunLight = new THREE.DirectionalLight(0xfff2d9, 0.6);
 sunLight.position.set(8, 12, 6);
 sunLight.castShadow = true;
 sunLight.shadow.camera.left = -12;
