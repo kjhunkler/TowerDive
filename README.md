@@ -20,7 +20,10 @@ only for signaling and room discovery — GitHub Pages stays the only host.
   is fully client-predicted, peers broadcast 20 Hz state snapshots, and remote
   players render ~120 ms in the past via snapshot interpolation (with brief
   extrapolation on packet loss), so motion stays smooth on real-world
-  connections. Shots replicate as tracer/impact events.
+  connections. Shots replicate as tracer/impact events. Movement collides
+  with walls (collide-and-slide, no clipping) and low obstacles are climbed
+  automatically — push into a ledge within reach to mantle onto it, or jump
+  at taller objects to grab and climb them.
 - **Deathmatch** — when every player in a session is in explore mode, a
   countdown starts and a deathmatch begins (and restarts the same way after
   it ends): first to 10 kills wins a round, best of 3 rounds wins the match,

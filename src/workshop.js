@@ -1424,6 +1424,12 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+// Dev-only handle for automated movement/physics tests; stripped from
+// production builds.
+if (import.meta.env.DEV) {
+  window.__towerdive = { walker, exploreCamera, scene, mapGroup, THREE };
+}
+
 // Joiners start from the host's synced map, not the local placeholder.
 if (!isJoiner) enqueueMapEdit(loadEntireMap);
 

@@ -29,6 +29,9 @@ export function createWalkController({ camera, canvas }) {
     slideDuration: 0.85,
     slideCooldown: 0.2,
     stanceLerp: 14,
+    collisionRadius: null,
+    mantleHeight: null,
+    mantleDuration: 0.28,
   };
 
   let active = false;
@@ -50,6 +53,8 @@ export function createWalkController({ camera, canvas }) {
   let slideCooldownTimer = 0;
   let stance = 'stand';
   let crouchWasHeld = false;
+  let mantleTimer = 0;
+  let mantleDebug = '';
 
   const keys = new Set();
   const raycaster = new THREE.Raycaster();
@@ -61,6 +66,10 @@ export function createWalkController({ camera, canvas }) {
   const wishDir = new THREE.Vector3();
   const velocity = new THREE.Vector3();
   const probeOrigin = new THREE.Vector3();
+  const wallDir = new THREE.Vector3();
+  const wallNormal = new THREE.Vector3();
+  const mantleFrom = new THREE.Vector3();
+  const mantleTo = new THREE.Vector3();
 
   function onKeyDown(event) {
     event.preventDefault();
@@ -98,6 +107,139 @@ export function createWalkController({ camera, canvas }) {
       if (normal.y >= config.slopeLimit) return hit;
     }
     return null;
+  }
+
+  // Casts a horizontal ray in the movement direction at two body heights
+  // (shin — above step height so stairs still work — and chest) and returns
+  // the nearest wall-like hit: a surface too steep to walk on. The normal is
+  // flattened to the horizontal plane and made to oppose the motion.
+  function castWall(dirX, dirZ, far) {
+    const feetY = camera.position.y - eyeHeight;
+    const heights = [feetY + config.stepHeight * 1.1, feetY + eyeHeight * 0.85];
+    let closest = null;
+    for (const originY of heights) {
+      probeOrigin.set(camera.position.x, originY, camera.position.z);
+      wallDir.set(dirX, 0, dirZ);
+      raycaster.set(probeOrigin, wallDir);
+      raycaster.far = far;
+      for (const hit of raycaster.intersectObject(target, true)) {
+        if (!hit.face) continue;
+        wallNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+        if (Math.abs(wallNormal.y) >= config.slopeLimit) continue; // floor/ceiling, not wall
+        let nx = wallNormal.x;
+        let nz = wallNormal.z;
+        const length = Math.hypot(nx, nz);
+        if (length < 1e-4) continue;
+        nx /= length;
+        nz /= length;
+        if (nx * dirX + nz * dirZ > 0) {
+          nx = -nx;
+          nz = -nz;
+        }
+        if (!closest || hit.distance < closest.distance) {
+          closest = { distance: hit.distance, nx, nz, point: hit.point };
+        }
+        break; // nearest valid hit along this ray; try the other height
+      }
+    }
+    return closest;
+  }
+
+  // Collide-and-slide: clip the frame's horizontal displacement against
+  // walls, redirecting the blocked remainder along the wall plane (second
+  // pass handles corners). Also bleeds off the into-wall velocity so speed
+  // doesn't build up while pushing against geometry.
+  function collideWalls(delta) {
+    let dispX = velocity.x * delta;
+    let dispZ = velocity.z * delta;
+    let wallHit = null;
+    for (let pass = 0; pass < 2; pass++) {
+      const dist = Math.hypot(dispX, dispZ);
+      if (dist <= 1e-8) break;
+      const dirX = dispX / dist;
+      const dirZ = dispZ / dist;
+      const hit = castWall(dirX, dirZ, dist + config.collisionRadius);
+      if (!hit) break;
+      wallHit = hit;
+      const allowed = Math.max(0, hit.distance - config.collisionRadius);
+      const remX = dispX - dirX * allowed;
+      const remZ = dispZ - dirZ * allowed;
+      const remDot = remX * hit.nx + remZ * hit.nz;
+      dispX = dirX * allowed + (remX - hit.nx * remDot);
+      dispZ = dirZ * allowed + (remZ - hit.nz * remDot);
+      const velDot = velocity.x * hit.nx + velocity.z * hit.nz;
+      if (velDot < 0) {
+        velocity.x -= hit.nx * velDot;
+        velocity.z -= hit.nz * velDot;
+      }
+    }
+    return { dispX, dispZ, wallHit };
+  }
+
+  // Mantling: pushing into a wall whose top is within reach hoists you onto
+  // it. Works while airborne too, so jumping at a taller object lets you
+  // grab and climb it — chained jumps + mantles scale stacked props.
+  function tryMantle(wallHit, direction) {
+    mantleDebug = !wallHit ? 'no-wall' : 'checking';
+    if (!wallHit || stance === 'prone' || mantleTimer > 0) return false;
+    if (direction.lengthSq() === 0) {
+      mantleDebug = 'no-input';
+      return false;
+    }
+    // Require actually pushing toward the wall, not grazing it.
+    if (direction.x * wallHit.nx + direction.z * wallHit.nz > -0.35) {
+      mantleDebug = 'not-pushing';
+      return false;
+    }
+    const feetY = camera.position.y - eyeHeight;
+    const probeTop = feetY + config.mantleHeight + eyeHeight * 0.2;
+    // Probe for a landing spot at several depths past the wall face, deepest
+    // first for a comfortable landing on solid blocks. The final probe sits
+    // barely past the face so fence-thin walls (some are only ~0.05 units
+    // thick) are still climbable — you perch on top of them.
+    let landX = 0;
+    let landZ = 0;
+    let ledgeY = null;
+    for (const depth of [2, 1.2, 0.5, 0.12]) {
+      landX = wallHit.point.x - wallHit.nx * config.collisionRadius * depth;
+      landZ = wallHit.point.z - wallHit.nz * config.collisionRadius * depth;
+      const ledge = findSurface(landX, landZ, probeTop, config.mantleHeight + eyeHeight);
+      if (!ledge) continue;
+      const y = ledge.point.y;
+      if (y > feetY + config.stepHeight && y <= feetY + config.mantleHeight) {
+        ledgeY = y;
+        break;
+      }
+    }
+    if (ledgeY === null) {
+      mantleDebug = 'no-ledge';
+      return false;
+    }
+    mantleDebug = 'started';
+    mantleTimer = config.mantleDuration;
+    mantleFrom.copy(camera.position);
+    mantleTo.set(landX, ledgeY + eyeHeight, landZ);
+    velocity.set(0, 0, 0);
+    slideTimer = 0;
+    jumpBufferTimer = 0;
+    return true;
+  }
+
+  function updateMantle(delta) {
+    mantleTimer = Math.max(0, mantleTimer - delta);
+    const t = 1 - mantleTimer / config.mantleDuration;
+    // Rise first, then pull forward over the lip.
+    const up = Math.min(t * 1.7, 1);
+    const across = Math.max(0, (t - 0.4) / 0.6);
+    camera.position.y = THREE.MathUtils.lerp(mantleFrom.y, mantleTo.y, up);
+    camera.position.x = THREE.MathUtils.lerp(mantleFrom.x, mantleTo.x, across);
+    camera.position.z = THREE.MathUtils.lerp(mantleFrom.z, mantleTo.z, across);
+    if (mantleTimer <= 0) {
+      groundY = mantleTo.y - eyeHeight;
+      grounded = true;
+      coyoteTimer = config.coyoteTime;
+      velocity.set(0, 0, 0);
+    }
   }
 
   function getWishDirection() {
@@ -187,6 +329,8 @@ export function createWalkController({ camera, canvas }) {
       jumpHeight: options.jumpHeight ?? standEyeHeight * 0.9,
       stepHeight: options.stepHeight ?? standEyeHeight * 0.45,
       slideMinSpeed: options.slideMinSpeed ?? (options.moveSpeed ?? standEyeHeight * 3.5) * 1.15,
+      collisionRadius: options.collisionRadius ?? standEyeHeight * 0.35,
+      mantleHeight: options.mantleHeight ?? standEyeHeight * 1.5,
     };
     crouchEyeHeight = options.crouchEyeHeight ?? standEyeHeight * 0.64;
     proneEyeHeight = options.proneEyeHeight ?? standEyeHeight * 0.34;
@@ -207,6 +351,7 @@ export function createWalkController({ camera, canvas }) {
     stance = 'stand';
     crouchWasHeld = false;
     frozen = false;
+    mantleTimer = 0;
     yaw = options.yaw ?? 0;
     pitch = 0;
     camera.rotation.order = 'YXZ';
@@ -249,6 +394,7 @@ export function createWalkController({ camera, canvas }) {
     coyoteTimer = config.coyoteTime;
     jumpBufferTimer = 0;
     slideTimer = 0;
+    mantleTimer = 0;
   }
 
   function update(delta) {
@@ -256,6 +402,11 @@ export function createWalkController({ camera, canvas }) {
     delta = Math.min(delta, 0.05);
     euler.set(pitch, yaw, 0);
     camera.quaternion.setFromEuler(euler);
+
+    if (mantleTimer > 0) {
+      updateMantle(delta);
+      return;
+    }
 
     jumpBufferTimer = Math.max(0, jumpBufferTimer - delta);
     updateStance(delta);
@@ -282,13 +433,19 @@ export function createWalkController({ camera, canvas }) {
       if (stance === 'slide') slideTimer = 0;
     }
 
-    const nextX = camera.position.x + velocity.x * delta;
-    const nextZ = camera.position.z + velocity.z * delta;
+    const { dispX, dispZ, wallHit } = collideWalls(delta);
+    if (tryMantle(wallHit, direction)) return;
+
+    const nextX = camera.position.x + dispX;
+    const nextZ = camera.position.z + dispZ;
     const probeY = camera.position.y + config.stepHeight + Math.max(velocity.y, 0) * delta;
     const hit = findSurface(nextX, nextZ, probeY, config.stepHeight + eyeHeight * 4 + Math.max(-velocity.y * delta, 0));
     const nextFeetY = camera.position.y - eyeHeight + velocity.y * delta;
 
-    if (hit && nextFeetY <= hit.point.y + config.stepHeight) {
+    // Only snap to the ground while not moving upward — otherwise the first
+    // frames of a jump (feet still within step range) get re-grounded and
+    // the jump never leaves the floor.
+    if (hit && velocity.y <= 0.0001 && nextFeetY <= hit.point.y + config.stepHeight) {
       groundY = hit.point.y;
       grounded = true;
       coyoteTimer = config.coyoteTime;
@@ -314,7 +471,7 @@ export function createWalkController({ camera, canvas }) {
       return active;
     },
     get state() {
-      return { grounded, stance, speed: horizontalSpeed() };
+      return { grounded, stance, speed: horizontalSpeed(), mantleDebug };
     },
     get eyeHeight() {
       return eyeHeight;
