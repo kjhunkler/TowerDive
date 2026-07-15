@@ -24,7 +24,7 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['assets/models/*.glb'],
+      includeAssets: ['assets/models/**/*.glb', 'assets/skyboxes/*.png'],
       manifest: {
         name: 'TowerDive',
         short_name: 'TowerDive',

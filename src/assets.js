@@ -1,4 +1,4 @@
-import { LinearFilter, LinearMipmapLinearFilter, Vector3 } from 'three';
+import { Box3, LinearFilter, LinearMipmapLinearFilter, Vector3 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 const loader = new GLTFLoader();
@@ -79,6 +79,21 @@ export function loadModel(name) {
     });
   cache.set(name, promise);
   return promise;
+}
+
+const heightCache = new Map();
+
+// Kits ship ground tiles at different slab thicknesses (e.g. a tower-defense
+// grass tile is 0.2 units thick, a fantasy-town road is 0.025) — measuring
+// each model's own bounding box lets callers sink a ground tile so its top
+// surface lands at a consistent world height regardless of source kit.
+export async function getModelHeight(name) {
+  if (heightCache.has(name)) return heightCache.get(name);
+  const template = await loadModel(name);
+  const box = new Box3().setFromObject(template);
+  const height = box.max.y - box.min.y;
+  heightCache.set(name, height);
+  return height;
 }
 
 export async function spawnModel(name, { position, rotationY = 0, scale = 1 } = {}) {

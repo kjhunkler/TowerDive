@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { spawnModel, setMaxAnisotropy } from './assets.js';
+import { spawnModel, getModelHeight, setMaxAnisotropy } from './assets.js';
 import { GRID_WIDTH, GRID_DEPTH, tileWorldPosition, tileKindAt, buildPathWaypoints } from './grid.js';
 import { buildTower } from './tower.js';
+import { applySkybox } from './skybox.js';
 
 const TILE_MODEL = {
-  grass: 'tile',
-  path: 'tile-straight',
-  spawn: 'tile-spawn',
-  end: 'tile-end',
+  grass: 'tower-defense/tile',
+  path: 'tower-defense/tile-straight',
+  spawn: 'tower-defense/tile-spawn',
+  end: 'tower-defense/tile-end',
 };
 
 document.getElementById('hud-version').textContent = `v${__APP_VERSION__}`;
@@ -21,6 +22,7 @@ setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1f2e);
+applySkybox(scene, 'alien');
 
 // Fixed isometric-style orthographic camera.
 const ISO_ANGLE = Math.atan(1 / Math.sqrt(2));
@@ -61,14 +63,21 @@ const world = new THREE.Group();
 scene.add(world);
 
 async function buildLevel() {
+  // Sink each tile by its own measured height so its top surface lands at
+  // y=0 — keeps tiles flush even if a kind's slab thickness ever differs.
+  const tileHeights = Object.fromEntries(
+    await Promise.all(Object.values(TILE_MODEL).map(async (name) => [name, await getModelHeight(name)]))
+  );
+
   const tilePromises = [];
   for (let col = 0; col < GRID_WIDTH; col++) {
     for (let row = 0; row < GRID_DEPTH; row++) {
       const kind = tileKindAt(col, row);
       const { x, z } = tileWorldPosition(col, row);
       const rotationY = kind === 'path' ? Math.PI / 2 : 0;
+      const y = -tileHeights[TILE_MODEL[kind]];
       tilePromises.push(
-        spawnModel(TILE_MODEL[kind], { position: { x, z }, rotationY }).then((tile) => world.add(tile))
+        spawnModel(TILE_MODEL[kind], { position: { x, y, z }, rotationY }).then((tile) => world.add(tile))
       );
     }
   }
@@ -82,7 +91,7 @@ async function buildLevel() {
 
 async function spawnEnemy() {
   const waypoints = buildPathWaypoints();
-  const enemy = await spawnModel('enemy-ufo-a', { position: waypoints[0], scale: 0.9 });
+  const enemy = await spawnModel('tower-defense/enemy-ufo-a', { position: waypoints[0], scale: 0.9 });
   world.add(enemy);
   return { mesh: enemy, waypoints, segment: 0, t: 0 };
 }
@@ -103,7 +112,7 @@ function updateEnemy(enemy, deltaSeconds) {
   }
 
   const t = enemy.t;
-  enemy.mesh.position.set(from.x + (to.x - from.x) * t, 0.3, from.z + (to.z - from.z) * t);
+  enemy.mesh.position.set(from.x + (to.x - from.x) * t, 0.1, from.z + (to.z - from.z) * t);
   enemy.mesh.rotation.y = Math.atan2(to.x - from.x, to.z - from.z);
 }
 

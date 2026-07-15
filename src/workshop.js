@@ -1,21 +1,23 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { spawnModel, setMaxAnisotropy } from './assets.js';
+import { spawnModel, getModelHeight, setMaxAnisotropy } from './assets.js';
 import { buildCategories, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
 import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
 import { createWalkController } from './walkController.js';
-import { TILE_SIZE, TILE_TOP } from './grid.js';
+import { TILE_SIZE } from './grid.js';
 import { TOWER_PIECE_HEIGHT } from './tower.js';
+import { applySkybox, SKYBOXES } from './skybox.js';
 
 const ERASE = '__erase';
 // Matches tower.js's stacking step, so nudging height lines up the
 // separately-placed bottom/middle/top pieces of a tower correctly.
 const HEIGHT_UNIT = TOWER_PIECE_HEIGHT;
 
-// Props (anything that isn't a ground tile) sit on top of the tile slab.
+// Props (anything that isn't a ground tile) stack on top of y=0, which is
+// where every kit's ground tile top surface lands (see grid.js/assets.js).
 function propY(heightStep) {
-  return TILE_TOP + heightStep * HEIGHT_UNIT;
+  return heightStep * HEIGHT_UNIT;
 }
 
 const canvas = document.getElementById('scene');
@@ -26,6 +28,7 @@ const brushDetailEl = document.getElementById('brush-status-detail');
 const exploreHint = document.getElementById('explore-hint');
 const exploreBtn = document.getElementById('action-explore');
 const importInput = document.getElementById('action-import-input');
+const skyboxSelect = document.getElementById('skybox-select');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -34,6 +37,16 @@ setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1f2e);
+
+for (const name of SKYBOXES) {
+  const option = document.createElement('option');
+  option.value = name;
+  option.textContent = `Sky: ${name}`;
+  skyboxSelect.appendChild(option);
+}
+skyboxSelect.value = 'day';
+applySkybox(scene, skyboxSelect.value);
+skyboxSelect.addEventListener('change', () => applySkybox(scene, skyboxSelect.value));
 
 const ISO_ANGLE = Math.atan(1 / Math.sqrt(2));
 const camera = new THREE.OrthographicCamera();
@@ -92,8 +105,9 @@ function rebuildIndex() {
 
 async function renderEntity(entity) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
+  const y = entity.ground ? -(await getModelHeight(entity.name)) : propY(entity.heightStep);
   const object = await spawnModel(entity.name, {
-    position: { x, y: entity.ground ? 0 : propY(entity.heightStep), z },
+    position: { x, y, z },
     rotationY: entity.rotationStep * (Math.PI / 2),
   });
   if (!map.entities.includes(entity)) return; // removed while loading
@@ -187,7 +201,8 @@ for (const category of buildCategories()) {
     const btn = document.createElement('button');
     btn.className = 'palette-item';
     btn.dataset.name = name;
-    btn.textContent = name;
+    btn.textContent = name.slice(name.indexOf('/') + 1);
+    btn.title = name;
     btn.addEventListener('click', () => selectBrush(name));
     grid.appendChild(btn);
   }
@@ -208,6 +223,7 @@ scene.add(cellCursor);
 
 let ghostObject = null;
 let ghostBrushName = null;
+let ghostGroundY = 0;
 
 // Keeps the ghost glued to the last known hover cell. Called both on
 // pointer move and right after an async model load resolves — without the
@@ -221,7 +237,7 @@ function syncGhostTransform() {
   }
   const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
   ghostObject.visible = true;
-  ghostObject.position.set(x, isGroundModel(currentBrush) ? 0 : propY(pendingHeight), z);
+  ghostObject.position.set(x, isGroundModel(currentBrush) ? ghostGroundY : propY(pendingHeight), z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
 }
 
@@ -232,7 +248,10 @@ async function ensureGhost(name) {
     ghostObject = null;
   }
   ghostBrushName = name;
-  const object = await spawnModel(name, {});
+  const [object, groundHeight] = await Promise.all([
+    spawnModel(name, {}),
+    isGroundModel(name) ? getModelHeight(name) : Promise.resolve(0),
+  ]);
   if (ghostBrushName !== name) return; // brush changed again while loading
   object.traverse((child) => {
     if (child.isMesh) {
@@ -243,6 +262,7 @@ async function ensureGhost(name) {
       child.receiveShadow = false;
     }
   });
+  ghostGroundY = -groundHeight;
   ghostObject = object;
   ghostObject.visible = false;
   scene.add(object);
