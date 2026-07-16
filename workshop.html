@@ -31,7 +31,15 @@
 
     <aside id="palette">
       <div id="palette-filter-row">
-        <input id="palette-search" type="search" placeholder="Search entities..." aria-label="Search entities" />
+        <input id="palette-search" type="search" placeholder="Search assets..." aria-label="Search assets" />
+        <select id="palette-kit-filter" aria-label="Filter by asset kit">
+          <option value="all">All kits</option>
+        </select>
+        <select id="palette-type-filter" aria-label="Filter by asset type">
+          <option value="all">All types</option>
+          <option value="ground">Ground</option>
+          <option value="prop">Props</option>
+        </select>
         <button id="palette-starred-filter" type="button" aria-pressed="false" title="Show starred items only">&#9734; Starred</button>
       </div>
       <div id="palette-tool-row">

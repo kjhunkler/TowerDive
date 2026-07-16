@@ -125,9 +125,29 @@
 }
 
 #palette-filter-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
   gap: 4px;
   margin-bottom: 8px;
+}
+
+#palette-kit-filter,
+#palette-type-filter {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(232, 236, 245, 0.18);
+  border-radius: 6px;
+  background: rgba(12, 15, 24, 0.65);
+  color: #e8ecf5;
+  font-size: 0.68rem;
+}
+
+#palette-search {
+  grid-column: 1 / -1;
+}
+
+#palette-starred-filter {
+  grid-column: 1 / -1;
 }
 
 #palette-search {
@@ -199,9 +219,12 @@
 }
 
 .palette-item {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   width: 100%;
-  padding: 6px 6px;
+  min-height: 76px;
+  padding: 5px 5px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: rgba(232, 236, 245, 0.08);
@@ -215,6 +238,19 @@
 
 .palette-entry .palette-item {
   padding-right: 22px;
+}
+
+.palette-preview {
+  display: block;
+  width: 100%;
+  height: 42px;
+  object-fit: contain;
+}
+
+.palette-item-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .palette-star {
@@ -539,4 +575,12 @@
 @keyframes dm-vignette {
   0% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+body.explore-mode #workshop-topbar,
+body.explore-mode #palette,
+body.explore-mode #brush-status,
+body.explore-mode #quickbar,
+body.explore-mode #workshop-hint {
+  display: none;
 }

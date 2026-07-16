@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { spawnModel, getModelBounds, setMaxAnisotropy } from './assets.js';
-import { buildCategories, isGroundModel } from './modelCategories.js';
+import { buildCategories, getKitOptions, getModelMeta, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
 import { createEmptyMap, getSavedMap, saveMapAs, renameMap, listMaps, exportMapFile, importMapFile } from './mapStore.js';
 import { createWalkController } from './walkController.js';
@@ -64,6 +64,8 @@ const skyboxSelect = document.getElementById('skybox-select');
 const undoBtn = document.getElementById('action-undo');
 const paletteSearch = document.getElementById('palette-search');
 const starredFilterBtn = document.getElementById('palette-starred-filter');
+const paletteKitFilter = document.getElementById('palette-kit-filter');
+const paletteTypeFilter = document.getElementById('palette-type-filter');
 const quickbar = document.getElementById('quickbar');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -457,6 +459,13 @@ function loadStarredNames() {
 
 const starredNames = loadStarredNames();
 
+for (const kit of getKitOptions()) {
+  const option = document.createElement('option');
+  option.value = kit.value;
+  option.textContent = kit.label;
+  paletteKitFilter.appendChild(option);
+}
+
 function saveStarredNames() {
   try {
     localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify([...starredNames]));
@@ -578,7 +587,16 @@ for (const category of buildCategories()) {
     const btn = document.createElement('button');
     btn.className = 'palette-item';
     btn.dataset.name = name;
-    btn.textContent = name.slice(name.indexOf('/') + 1);
+    const preview = document.createElement('img');
+    preview.className = 'palette-preview';
+    preview.alt = '';
+    preview.dataset.previewName = name;
+    btn.appendChild(preview);
+
+    const label = document.createElement('span');
+    label.className = 'palette-item-label';
+    label.textContent = name.slice(name.indexOf('/') + 1);
+    btn.appendChild(label);
     btn.title = name;
     btn.addEventListener('click', () => selectBrush(name));
     entry.appendChild(btn);
@@ -600,8 +618,15 @@ function applyPaletteFilters() {
   paletteCategories.querySelectorAll('.palette-category').forEach((section) => {
     let visibleCount = 0;
     section.querySelectorAll('.palette-entry').forEach((entry) => {
-      const name = entry.querySelector('.palette-item').dataset.name;
-      const visible = (!query || name.toLocaleLowerCase().includes(query))
+      const item = entry.querySelector('.palette-item');
+      const name = item.dataset.name;
+      const meta = getModelMeta(name);
+      const selectedKit = paletteKitFilter.value;
+      const selectedType = paletteTypeFilter.value;
+      const searchable = `${name} ${meta.kitLabel} ${meta.type}`.toLocaleLowerCase();
+      const visible = (!query || searchable.includes(query))
+        && (selectedKit === 'all' || meta.kit === selectedKit)
+        && (selectedType === 'all' || meta.type === selectedType)
         && (!starredOnly || starredNames.has(name));
       entry.hidden = !visible;
       if (visible) visibleCount += 1;
@@ -633,6 +658,8 @@ function toggleStar(name) {
 }
 
 paletteSearch.addEventListener('input', applyPaletteFilters);
+paletteKitFilter.addEventListener('change', applyPaletteFilters);
+paletteTypeFilter.addEventListener('change', applyPaletteFilters);
 starredFilterBtn.addEventListener('click', () => {
   starredOnly = !starredOnly;
   updateStarControls();
@@ -742,6 +769,21 @@ function createQuickbarItem(name) {
   if (name === currentBrush) button.classList.add('selected');
   return button;
 }
+
+function hydratePalettePreviews() {
+  paletteCategories.querySelectorAll('.palette-preview[data-preview-name]').forEach((preview) => {
+    const name = preview.dataset.previewName;
+    delete preview.dataset.previewName;
+    getModelPreview(name)
+      .then((url) => {
+        if (preview.isConnected) preview.src = url;
+      })
+      .catch((error) => console.error(`Failed to render preview for ${name}:`, error));
+  });
+}
+
+hydratePalettePreviews();
+applyPaletteFilters();
 
 function syncQuickbar() {
   const availableNames = new Set(map.entities.map((entity) => entity.name));
@@ -1590,6 +1632,7 @@ function exitExplore() {
   exploreHint.hidden = true;
   exploreBtn.classList.remove('active');
   exploreBtn.textContent = '\u{1F6F8} Explore';
+  document.body.classList.remove('explore-mode');
   dm?.refreshHud();
 }
 
@@ -1609,6 +1652,7 @@ exploreBtn.addEventListener('click', () => {
     startPosition: { x: 0, z: 0 },
   });
   weapons.enter();
+  document.body.classList.add('explore-mode');
   exploreHint.hidden = false;
   exploreBtn.classList.add('active');
   exploreBtn.textContent = '\u{1F6F8} exit explore';
