@@ -116,3 +116,115 @@ html, body {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
+
+#weapon-reticle i,
+#weapon-reticle b,
+#weapon-reticle em,
+#weapon-reticle strong {
+  position: absolute;
+  display: block;
+  background: rgba(232, 236, 245, 0.9);
+  border-radius: 999px;
+  box-shadow: 0 0 8px rgba(130, 246, 255, 0.35);
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+#weapon-reticle i,
+#weapon-reticle b {
+  left: 8px;
+  width: 2px;
+  height: 7px;
+}
+
+#weapon-reticle i { top: -7px; }
+#weapon-reticle b { bottom: -7px; }
+
+#weapon-reticle em,
+#weapon-reticle strong {
+  top: 8px;
+  width: 7px;
+  height: 2px;
+}
+
+#weapon-reticle em { left: -7px; }
+#weapon-reticle strong { right: -7px; }
+
+#weapon-reticle.ads i,
+#weapon-reticle.ads b,
+#weapon-reticle.ads em,
+#weapon-reticle.ads strong {
+  opacity: 0.25;
+  transform: scale(0.65);
+}
+
+#weapon-hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  color: #fff1a8;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.6);
+  text-shadow: 0 0 10px rgba(255, 206, 96, 0.9);
+}
+
+.weapon-hitmarker-pop {
+  animation: weapon-hitmarker-pop 190ms ease-out;
+}
+
+@keyframes weapon-hitmarker-pop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.55); }
+  35% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
+}
+
+#weapon-card {
+  position: absolute;
+  right: max(24px, env(safe-area-inset-right, 0px));
+  bottom: max(22px, env(safe-area-inset-bottom, 0px));
+  min-width: 230px;
+  padding: 10px 13px;
+  border: 1px solid rgba(130, 246, 255, 0.28);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(7, 12, 22, 0.72), rgba(24, 38, 55, 0.48));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35), inset 0 0 24px rgba(130, 246, 255, 0.06);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+#weapon-name {
+  color: #82f6ff;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+#weapon-card #weapon-ammo {
+  position: static;
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 1.45rem;
+}
+
+#weapon-slots {
+  margin-top: 4px;
+  max-width: 300px;
+  color: rgba(232, 236, 245, 0.62);
+  font-size: 0.62rem;
+  white-space: pre-wrap;
+}
+
+#weapon-card.weapon-low-ammo {
+  border-color: rgba(255, 97, 97, 0.55);
+  animation: weapon-low-ammo 900ms ease-in-out infinite alternate;
+}
+
+@keyframes weapon-low-ammo {
+  from { box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35), inset 0 0 24px rgba(255, 97, 97, 0.08); }
+  to { box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35), inset 0 0 28px rgba(255, 97, 97, 0.28); }
+}
