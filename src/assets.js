@@ -88,8 +88,12 @@ export async function getModelBounds(name) {
   const template = await loadModel(name);
   const box = new Box3().setFromObject(template);
   const bounds = {
+    minX: box.min.x,
     minY: box.min.y,
+    minZ: box.min.z,
+    maxX: box.max.x,
     maxY: box.max.y,
+    maxZ: box.max.z,
     height: box.max.y - box.min.y,
   };
   boundsCache.set(name, bounds);

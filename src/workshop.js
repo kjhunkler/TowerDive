@@ -24,6 +24,33 @@ function getCellStackBase(col, row) {
   return Math.max(...props.map((entity) => entity.heightStep ?? 0)) + 1;
 }
 
+function getHorizontalBounds(bounds, rotationStep, mirrors, scale) {
+  const angle = rotationStep * (Math.PI / 2);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const xs = [bounds.minX, bounds.maxX];
+  const zs = [bounds.minZ, bounds.maxZ];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+
+  for (const sourceX of xs) {
+    for (const sourceZ of zs) {
+      const x = sourceX * scale * (mirrors.x ? -1 : 1);
+      const z = sourceZ * scale * (mirrors.z ? -1 : 1);
+      const rotatedX = x * cos + z * sin;
+      const rotatedZ = -x * sin + z * cos;
+      minX = Math.min(minX, rotatedX);
+      maxX = Math.max(maxX, rotatedX);
+      minZ = Math.min(minZ, rotatedZ);
+      maxZ = Math.max(maxZ, rotatedZ);
+    }
+  }
+
+  return { minX, maxX, minZ, maxZ };
+}
+
 const canvas = document.getElementById('scene');
 const netStatusEl = document.getElementById('net-status');
 const paletteToolRow = document.getElementById('palette-tool-row');
@@ -167,7 +194,10 @@ async function layoutCellStack(col, row) {
       entity.stackOffset = savedStep - (legacyMaxStep + 1);
     }
     legacyMaxStep = Math.max(legacyMaxStep, savedStep);
-    const baseY = top + entity.stackOffset * verticalBounds.height;
+    const baseY = Number.isFinite(entity.attachedBaseY)
+      ? entity.attachedBaseY
+      : top + entity.stackOffset * verticalBounds.height;
+    entity.stackOffset = (baseY - top) / verticalBounds.height;
     entity.stackY = baseY - verticalBounds.minY;
     top = Math.max(top, entity.stackY + verticalBounds.maxY);
     const object = objectsById.get(entity.id);
@@ -189,7 +219,9 @@ function getPendingStackY(col, row, modelHeight) {
 }
 
 async function renderEntity(entity, generation = renderGeneration) {
-  const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
+  const cellPosition = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
+  const x = cellPosition.x + (entity.offsetX ?? 0);
+  const z = cellPosition.z + (entity.offsetZ ?? 0);
   const bounds = entity.ground
     ? getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY, entity.scale ?? 1)
     : null;
@@ -719,6 +751,9 @@ let ghostBrushName = null;
 let ghostMinY = 0;
 let ghostMaxY = 0;
 let ghostHeight = 0;
+let ghostBounds = null;
+let ghostBoundsName = null;
+let hoverSidePlacement = null;
 
 // Keeps the ghost glued to the last known hover cell. Called both on
 // pointer move and right after an async model load resolves — without the
@@ -730,7 +765,9 @@ function syncGhostTransform() {
     ghostObject.visible = false;
     return;
   }
-  const { x, z } = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
+  const cellPosition = cellToWorld(hoverCell.col, hoverCell.row, map.width, map.depth, TILE_SIZE);
+  const x = hoverSidePlacement?.x ?? cellPosition.x;
+  const z = hoverSidePlacement?.z ?? cellPosition.z;
   ghostObject.visible = true;
   const verticalBounds = getVerticalBounds(
     { minY: ghostMinY, maxY: ghostMaxY, height: ghostHeight },
@@ -739,7 +776,8 @@ function syncGhostTransform() {
   );
   const y = isGroundModel(currentBrush)
     ? -verticalBounds.maxY
-    : getPendingStackY(hoverCell.col, hoverCell.row, verticalBounds.height) - verticalBounds.minY;
+    : hoverSidePlacement?.y
+      ?? getPendingStackY(hoverCell.col, hoverCell.row, verticalBounds.height) - verticalBounds.minY;
   ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
   ghostObject.scale.set(
@@ -750,12 +788,18 @@ function syncGhostTransform() {
 }
 
 async function ensureGhost(name) {
-  if (ghostBrushName === name) return;
+  if (ghostBrushName === name) {
+    refreshPointerHover();
+    return;
+  }
   if (ghostObject) {
     scene.remove(ghostObject);
     ghostObject = null;
   }
   ghostBrushName = name;
+  ghostBounds = null;
+  ghostBoundsName = null;
+  hoverSidePlacement = null;
   const [object, bounds] = await Promise.all([
     spawnModel(name, {}),
     getModelBounds(name),
@@ -773,10 +817,12 @@ async function ensureGhost(name) {
   ghostMinY = bounds.minY;
   ghostMaxY = bounds.maxY;
   ghostHeight = bounds.height;
+  ghostBounds = bounds;
+  ghostBoundsName = name;
   ghostObject = object;
   ghostObject.visible = false;
   scene.add(object);
-  syncGhostTransform();
+  refreshPointerHover();
 }
 
 function updateGhost() {
@@ -805,6 +851,64 @@ selectionOutline.visible = false;
 scene.add(selectionOutline);
 let hoverCell = null;
 let hoverEntityId = null;
+const faceNormal = new THREE.Vector3();
+const targetBounds = new THREE.Box3();
+const targetCenter = new THREE.Vector3();
+
+function getSidePlacement(intersection, targetObject) {
+  if (
+    !intersection?.face
+    || !targetObject
+    || !ghostBounds
+    || ghostBoundsName !== currentBrush
+    || !currentBrush
+    || currentBrush === ERASE
+    || isGroundModel(currentBrush)
+  ) return null;
+
+  faceNormal.copy(intersection.face.normal).transformDirection(intersection.object.matrixWorld);
+  const horizontalStrength = Math.max(Math.abs(faceNormal.x), Math.abs(faceNormal.z));
+  if (Math.abs(faceNormal.y) > 0.45 || horizontalStrength < 0.75) return null;
+
+  targetBounds.setFromObject(targetObject);
+  targetBounds.getCenter(targetCenter);
+  const horizontalBounds = getHorizontalBounds(
+    ghostBounds,
+    pendingRotation,
+    pendingMirrors,
+    pendingScale
+  );
+  const verticalBounds = getVerticalBounds(ghostBounds, pendingMirrors.y, pendingScale);
+
+  let x;
+  let z;
+  if (Math.abs(faceNormal.x) >= Math.abs(faceNormal.z)) {
+    const positive = faceNormal.x > 0;
+    x = intersection.point.x
+      - (positive ? horizontalBounds.minX : horizontalBounds.maxX);
+    z = targetCenter.z - (horizontalBounds.minZ + horizontalBounds.maxZ) / 2;
+  } else {
+    const positive = faceNormal.z > 0;
+    z = intersection.point.z
+      - (positive ? horizontalBounds.minZ : horizontalBounds.maxZ);
+    x = targetCenter.x - (horizontalBounds.minX + horizontalBounds.maxX) / 2;
+  }
+
+  const destination = worldToCell(x, z, map.width, map.depth, TILE_SIZE);
+  const col = THREE.MathUtils.clamp(destination.col, 0, map.width - 1);
+  const row = THREE.MathUtils.clamp(destination.row, 0, map.depth - 1);
+  const cellPosition = cellToWorld(col, row, map.width, map.depth, TILE_SIZE);
+  const baseY = targetBounds.min.y + pendingHeight * verticalBounds.height;
+  return {
+    col,
+    row,
+    x,
+    y: baseY - verticalBounds.minY,
+    z,
+    offsetX: x - cellPosition.x,
+    offsetZ: z - cellPosition.z,
+  };
+}
 
 function updateSelectionOutline() {
   const object = objectsById.get(selectedEntityId);
@@ -833,10 +937,13 @@ function updateHover(clientX, clientY, ignoredEntityId = null) {
   hoverEntityId = getEntityIdFromIntersection(entityHit);
   const hoverEntity = map.entities.find((entity) => entity.id === hoverEntityId);
   const hoverObject = objectsById.get(hoverEntityId);
+  hoverSidePlacement = getSidePlacement(entityHit, hoverObject);
   hoverOutline.visible = Boolean(hoverObject);
   if (hoverObject) hoverOutline.setFromObject(hoverObject);
 
-  if (hoverEntity) {
+  if (hoverSidePlacement) {
+    hoverCell = { col: hoverSidePlacement.col, row: hoverSidePlacement.row };
+  } else if (hoverEntity) {
     hoverCell = { col: hoverEntity.col, row: hoverEntity.row };
   } else {
     hoverEntityId = null;
@@ -850,7 +957,9 @@ function updateHover(clientX, clientY, ignoredEntityId = null) {
     return;
   }
 
-  const { col, row } = hoverEntity
+  const { col, row } = hoverSidePlacement
+    ? hoverSidePlacement
+    : hoverEntity
     ? hoverCell
     : worldToCell(point.x, point.z, map.width, map.depth, TILE_SIZE);
   if (col < 0 || col >= map.width || row < 0 || row >= map.depth) {
@@ -870,7 +979,7 @@ function updateHover(clientX, clientY, ignoredEntityId = null) {
 
 // --- placing / erasing ------------------------------------------------------
 
-async function placeEntity({ cell, brush, rotation, heightOffset, mirrors, scale }) {
+async function placeEntity({ cell, brush, rotation, heightOffset, mirrors, scale, sidePlacement }) {
   if (!cell || !brush || brush === ERASE) return;
   recordUndoState();
   const { col, row } = cell;
@@ -894,7 +1003,13 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors, scale
   } else {
     const bounds = await getModelBounds(brush);
     const verticalBounds = getVerticalBounds(bounds, mirrors.y, scale);
-    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * verticalBounds.height;
+    const currentStackTop = cellStackTops.get(cellKey(col, row)) || 0;
+    const baseY = sidePlacement
+      ? sidePlacement.y + verticalBounds.minY
+      : currentStackTop + heightOffset * verticalBounds.height;
+    const stackOffset = sidePlacement
+      ? (baseY - currentStackTop) / verticalBounds.height
+      : heightOffset;
     placed = addEntity({
       name: brush,
       ground: false,
@@ -902,8 +1017,11 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors, scale
       row,
       rotationStep: rotation,
       heightStep: getCellStackBase(col, row) + heightOffset,
-      stackOffset: heightOffset,
+      stackOffset,
       stackY: baseY - verticalBounds.minY,
+      offsetX: sidePlacement?.offsetX ?? 0,
+      offsetZ: sidePlacement?.offsetZ ?? 0,
+      attachedBaseY: sidePlacement ? baseY : null,
       mirrorX: mirrors.x,
       mirrorY: mirrors.y,
       mirrorZ: mirrors.z,
@@ -961,6 +1079,9 @@ async function moveEntityCore(entity, cell) {
   entity.row = cell.row;
   entity.heightStep = entity.ground ? 0 : getCellStackBase(cell.col, cell.row);
   entity.stackOffset = 0;
+  entity.offsetX = 0;
+  entity.offsetZ = 0;
+  entity.attachedBaseY = null;
   map.entities.push(entity);
   rebuildIndex();
 
@@ -976,6 +1097,10 @@ async function moveEntityCore(entity, cell) {
 }
 
 async function adjustHeightCore(entity, delta) {
+  if (Number.isFinite(entity.attachedBaseY)) {
+    const bounds = await getModelBounds(entity.name);
+    entity.attachedBaseY += bounds.height * (entity.scale ?? 1) * delta;
+  }
   entity.stackOffset = (entity.stackOffset ?? 0) + delta;
   entity.heightStep = (entity.heightStep ?? 0) + delta;
   await layoutCellStack(entity.col, entity.row);
@@ -1029,7 +1154,12 @@ async function adjustEntityScaleCore(entity, delta) {
 async function moveSelectedEntity({ entityId, cell }) {
   const entity = map.entities.find((candidate) => candidate.id === entityId);
   if (!entity || !cell) return;
-  if (entity.col === cell.col && entity.row === cell.row) {
+  if (
+    entity.col === cell.col
+    && entity.row === cell.row
+    && Math.abs(entity.offsetX ?? 0) < 1e-6
+    && Math.abs(entity.offsetZ ?? 0) < 1e-6
+  ) {
     moveEntityId = null;
     updateBrushStatus();
     return;
@@ -1077,18 +1207,27 @@ async function scaleSelectedEntity(entityId, delta) {
 
 function scaleBrush(delta) {
   pendingScale = THREE.MathUtils.clamp(pendingScale + delta, 0.25, 4);
-  syncGhostTransform();
+  refreshPointerHover();
   updateBrushStatus();
 }
 
 function toggleBrushMirror(axis) {
   pendingMirrors[axis] = !pendingMirrors[axis];
-  syncGhostTransform();
+  refreshPointerHover();
   updateBrushStatus();
 }
 
 let dragCandidate = null;
 let suppressNextClick = false;
+let lastPointerPosition = null;
+
+function refreshPointerHover() {
+  if (lastPointerPosition) {
+    updateHover(lastPointerPosition.x, lastPointerPosition.y);
+  } else {
+    syncGhostTransform();
+  }
+}
 
 function restoreDraggedObject(candidate) {
   const object = objectsById.get(candidate?.entityId);
@@ -1128,6 +1267,7 @@ canvas.addEventListener('pointerdown', (event) => {
 
 canvas.addEventListener('pointermove', (event) => {
   if (walker.active) return;
+  lastPointerPosition = { x: event.clientX, y: event.clientY };
   if (dragCandidate?.pointerId === event.pointerId) {
     if (!dragCandidate.dragging) {
       const distance = Math.hypot(
@@ -1220,6 +1360,7 @@ canvas.addEventListener('click', (event) => {
       heightOffset: pendingHeight,
       mirrors: { ...pendingMirrors },
       scale: pendingScale,
+      sidePlacement: hoverSidePlacement ? { ...hoverSidePlacement } : null,
     };
     enqueueMapEdit(() => placeEntity(request));
   }
@@ -1284,7 +1425,7 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'r' || event.key === 'R') {
     pendingRotation = (pendingRotation + 1) % 4;
     updateBrushStatus();
-    syncGhostTransform();
+    refreshPointerHover();
   } else if (event.key === '[') {
     if (selectedEntityId !== null && !currentBrush) {
       const entityId = selectedEntityId;
@@ -1292,7 +1433,7 @@ window.addEventListener('keydown', (event) => {
     } else {
       pendingHeight -= 1;
       updateBrushStatus();
-      syncGhostTransform();
+      refreshPointerHover();
     }
   } else if (event.key === ']') {
     if (selectedEntityId !== null && !currentBrush) {
@@ -1301,7 +1442,7 @@ window.addEventListener('keydown', (event) => {
     } else {
       pendingHeight += 1;
       updateBrushStatus();
-      syncGhostTransform();
+      refreshPointerHover();
     }
   } else if (event.key === 'Escape') {
     if (currentBrush || moveEntityId !== null) deselectBrush();
