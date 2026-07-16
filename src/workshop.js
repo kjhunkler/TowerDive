@@ -74,6 +74,26 @@ setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1f2e);
 
+// Scene.background paints the canvas behind the world, but the orthographic
+// map editor needs a visible sky surface so the chosen skybox feels like it
+// surrounds the map while orbiting and panning. Keep the dome just inside the
+// editor camera's far plane and draw its inward-facing surface behind props.
+const editorSkyDome = new THREE.Mesh(
+  new THREE.SphereGeometry(90, 64, 32),
+  new THREE.MeshBasicMaterial({ side: THREE.BackSide, depthWrite: false })
+);
+editorSkyDome.renderOrder = -1000;
+scene.add(editorSkyDome);
+
+let editorSkyboxRequest = 0;
+async function setEditorSkybox(name) {
+  const requestId = ++editorSkyboxRequest;
+  const texture = await applySkybox(scene, name);
+  if (requestId !== editorSkyboxRequest) return;
+  editorSkyDome.material.map = texture;
+  editorSkyDome.material.needsUpdate = true;
+}
+
 for (const name of SKYBOXES) {
   const option = document.createElement('option');
   option.value = name;
@@ -81,9 +101,9 @@ for (const name of SKYBOXES) {
   skyboxSelect.appendChild(option);
 }
 skyboxSelect.value = 'day';
-applySkybox(scene, skyboxSelect.value);
+setEditorSkybox(skyboxSelect.value);
 skyboxSelect.addEventListener('change', () => {
-  applySkybox(scene, skyboxSelect.value);
+  setEditorSkybox(skyboxSelect.value);
   broadcastOp({ t: 'sky', name: skyboxSelect.value });
 });
 
@@ -1693,7 +1713,7 @@ async function applyRemoteOp(op) {
     case 'sky': {
       if (SKYBOXES.includes(op.name)) {
         skyboxSelect.value = op.name;
-        applySkybox(scene, op.name);
+        setEditorSkybox(op.name);
       }
       return;
     }
@@ -1812,7 +1832,7 @@ if (netEnabled) {
           clearEntitySelection();
           if (SKYBOXES.includes(data.sky)) {
             skyboxSelect.value = data.sky;
-            applySkybox(scene, data.sky);
+            setEditorSkybox(data.sky);
           }
           await loadEntireMap();
           if (
