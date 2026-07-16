@@ -7,7 +7,7 @@ import { createEmptyMap, getSavedMap, saveMapAs, renameMap, listMaps, exportMapF
 import { createWalkController } from './walkController.js';
 import { createWeaponController } from './weaponController.js';
 import { TILE_SIZE } from './grid.js';
-import { applySkybox, SKYBOXES } from './skybox.js';
+import { applySkybox, loadSkyboxSurface, SKYBOXES } from './skybox.js';
 import { getNetIntent, getPlayerName, createGameSession, announceInLobby, selfId } from './net.js';
 import { createRemotePlayers } from './remotePlayers.js';
 import { createDeathmatch } from './deathmatch.js';
@@ -88,9 +88,12 @@ scene.add(editorSkyDome);
 let editorSkyboxRequest = 0;
 async function setEditorSkybox(name) {
   const requestId = ++editorSkyboxRequest;
-  const texture = await applySkybox(scene, name);
+  const [, surfaceTexture] = await Promise.all([
+    applySkybox(scene, name),
+    loadSkyboxSurface(name),
+  ]);
   if (requestId !== editorSkyboxRequest) return;
-  editorSkyDome.material.map = texture;
+  editorSkyDome.material.map = surfaceTexture;
   editorSkyDome.material.needsUpdate = true;
 }
 
