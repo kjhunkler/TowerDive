@@ -259,6 +259,75 @@ function removeEntity(id) {
   }
 }
 
+async function removeEntityPreservingStack(id, preservedSurvivors = null) {
+  const target = map.entities.find((entity) => entity.id === id);
+  if (!target) return null;
+
+  const key = cellKey(target.col, target.row);
+  const survivingProps = (cellIndex.get(key) || [])
+    .filter((entity) => !entity.ground && entity.id !== id);
+  const savedY = new Map(
+    survivingProps.map((entity) => [
+      entity.id,
+      entity.stackY ?? objectsById.get(entity.id)?.position.y ?? 0,
+    ])
+  );
+
+  removeEntity(id);
+  if (target.ground || survivingProps.length === 0) {
+    await layoutCellStack(target.col, target.row);
+    return target;
+  }
+
+  if (Array.isArray(preservedSurvivors)) {
+    const preservedById = new Map(
+      preservedSurvivors.map((survivor) => [survivor.id, survivor])
+    );
+    for (const entity of survivingProps) {
+      const preserved = preservedById.get(entity.id);
+      if (!preserved || !Number.isFinite(preserved.stackOffset)) continue;
+      entity.stackOffset = preserved.stackOffset;
+      entity.stackY = Number.isFinite(preserved.stackY) ? preserved.stackY : entity.stackY;
+    }
+    await layoutCellStack(target.col, target.row);
+    return {
+      target,
+      survivors: survivingProps.map(({ id, stackOffset, stackY }) => ({
+        id,
+        stackOffset,
+        stackY,
+      })),
+    };
+  }
+
+  const bounds = await Promise.all(
+    survivingProps.map((entity) => getModelBounds(entity.name))
+  );
+  let top = 0;
+  survivingProps.forEach((entity, index) => {
+    const verticalBounds = getVerticalBounds(
+      bounds[index],
+      entity.mirrorY,
+      entity.scale ?? 1
+    );
+    const stackY = savedY.get(entity.id);
+    const baseY = stackY + verticalBounds.minY;
+    entity.stackOffset = (baseY - top) / verticalBounds.height;
+    entity.stackY = stackY;
+    top = Math.max(top, stackY + verticalBounds.maxY);
+  });
+
+  await layoutCellStack(target.col, target.row);
+  return {
+    target,
+    survivors: survivingProps.map(({ id, stackOffset, stackY }) => ({
+      id,
+      stackOffset,
+      stackY,
+    })),
+  };
+}
+
 // --- edit history -----------------------------------------------------------
 
 const undoStack = [];
@@ -856,9 +925,8 @@ async function eraseEntity({ cell, entityId }) {
   if (entityId !== null && !selectedTarget) return;
   const target = selectedTarget || (props.length ? props[props.length - 1] : entities[entities.length - 1]);
   recordUndoState();
-  removeEntity(target.id);
-  await layoutCellStack(cell.col, cell.row);
-  broadcastOp({ t: 'del', id: target.id });
+  const deletion = await removeEntityPreservingStack(target.id);
+  broadcastOp({ t: 'del', id: target.id, survivors: deletion?.survivors });
   mapRevision += 1;
   syncQuickbar();
   hoverEntityId = null;
@@ -869,9 +937,8 @@ async function deleteSelectedEntity(entityId) {
   const entity = map.entities.find((candidate) => candidate.id === entityId);
   if (!entity) return;
   recordUndoState();
-  removeEntity(entity.id);
-  await layoutCellStack(entity.col, entity.row);
-  broadcastOp({ t: 'del', id: entity.id });
+  const deletion = await removeEntityPreservingStack(entity.id);
+  broadcastOp({ t: 'del', id: entity.id, survivors: deletion?.survivors });
   mapRevision += 1;
   syncQuickbar();
   clearEntitySelection();
@@ -1375,8 +1442,7 @@ async function applyRemoteOp(op) {
     case 'del': {
       const entity = findEntity(op.id);
       if (!entity) return;
-      removeEntity(entity.id);
-      await layoutCellStack(entity.col, entity.row);
+      await removeEntityPreservingStack(entity.id, op.survivors);
       mapRevision += 1;
       syncQuickbar();
       return;
