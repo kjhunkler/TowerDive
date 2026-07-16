@@ -1,5 +1,14 @@
 import { getPlayerName, setPlayerName, setNetIntent, watchLobby } from './net.js';
-import { loadMap } from './mapStore.js';
+import {
+  listMaps,
+  getSavedMap,
+  saveMapAs,
+  renameMap,
+  duplicateMap,
+  deleteMap,
+  exportMapFile,
+  importMapFile,
+} from './mapStore.js';
 
 const nameInput = document.getElementById('menu-name');
 const createBtn = document.getElementById('menu-create');
@@ -40,15 +49,189 @@ function openWorkshop(intent) {
 
 createBtn.addEventListener('click', () => openWorkshop({ mode: 'new' }));
 
-const hasSavedMap = Boolean(loadMap());
-loadBtn.disabled = !hasSavedMap;
-loadBtn.title = hasSavedMap ? 'Open the map saved in this browser' : 'No map saved in this browser yet';
-loadBtn.addEventListener('click', () => openWorkshop({ mode: 'saved' }));
+loadBtn.title = 'Browse and manage the maps saved in this browser';
+loadBtn.addEventListener('click', () => openLibrary('open'));
 
-hostBtn.title = 'Host your saved map — friends can join, edit with you, and explore together';
+hostBtn.title = 'Pick a map to host — friends can join, edit with you, and explore together';
 hostBtn.addEventListener('click', () => {
   if (!requireName()) return;
-  openWorkshop({ mode: 'host' });
+  openLibrary('host');
+});
+
+// --- map library ----------------------------------------------------------
+
+const libraryEl = document.getElementById('library');
+const libraryTitle = document.getElementById('library-title');
+const libraryList = document.getElementById('library-list');
+const libraryNewBtn = document.getElementById('library-new');
+const libraryImportBtn = document.getElementById('library-import');
+const libraryImportInput = document.getElementById('library-import-input');
+
+let libraryMode = 'open';
+
+function formatEdited(timestamp) {
+  const minutes = Math.round((Date.now() - timestamp) / 60000);
+  if (minutes < 1) return 'edited just now';
+  if (minutes < 60) return `edited ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `edited ${hours} h ago`;
+  return `edited ${Math.round(hours / 24)} d ago`;
+}
+
+function launchMap(entry) {
+  openWorkshop(libraryMode === 'host'
+    ? { mode: 'host', mapId: entry.id }
+    : { mode: 'saved', mapId: entry.id });
+}
+
+function beginRename(entry, nameEl) {
+  const input = document.createElement('input');
+  input.className = 'library-rename-input';
+  input.value = entry.name;
+  input.maxLength = 48;
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true;
+    renameMap(entry.id, input.value);
+    renderLibrary();
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') commit();
+    if (event.key === 'Escape') {
+      committed = true;
+      renderLibrary();
+    }
+    event.stopPropagation();
+  });
+  input.addEventListener('blur', commit);
+  input.addEventListener('click', (event) => event.stopPropagation());
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function createLibraryCard(entry) {
+  const card = document.createElement('div');
+  card.className = 'library-card';
+
+  const thumb = document.createElement('div');
+  thumb.className = 'library-thumb';
+  if (entry.thumb) {
+    const img = document.createElement('img');
+    img.src = entry.thumb;
+    img.alt = '';
+    thumb.appendChild(img);
+  } else {
+    thumb.classList.add('library-thumb-empty');
+    thumb.textContent = '\u{1F5FA}';
+  }
+  card.appendChild(thumb);
+
+  const info = document.createElement('div');
+  info.className = 'library-info';
+  const name = document.createElement('div');
+  name.className = 'library-name';
+  name.textContent = entry.name;
+  name.title = entry.name;
+  const meta = document.createElement('div');
+  meta.className = 'library-meta';
+  meta.textContent = `${entry.entityCount ?? '?'} pieces · ${entry.width}×${entry.depth} · ${formatEdited(entry.updatedAt)}`;
+  info.append(name, meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'library-actions';
+  const addAction = (label, title, handler) => {
+    const button = document.createElement('button');
+    button.className = 'library-action';
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      handler();
+    });
+    actions.appendChild(button);
+  };
+  addAction('✎', 'Rename', () => beginRename(entry, name));
+  addAction('⧉', 'Duplicate', () => {
+    duplicateMap(entry.id);
+    renderLibrary();
+  });
+  addAction('⤓', 'Export as file', () => {
+    const map = getSavedMap(entry.id);
+    if (map) exportMapFile(map, entry.name);
+  });
+  addAction('\u{1F5D1}', 'Delete', () => {
+    if (!confirm(`Delete "${entry.name}"? This can't be undone.`)) return;
+    deleteMap(entry.id);
+    renderLibrary();
+  });
+  info.appendChild(actions);
+  card.appendChild(info);
+
+  const primary = document.createElement('button');
+  primary.className = 'library-primary';
+  primary.textContent = libraryMode === 'host' ? '\u{1F4E1} Host' : 'Open';
+  primary.addEventListener('click', (event) => {
+    event.stopPropagation();
+    launchMap(entry);
+  });
+  card.appendChild(primary);
+
+  card.addEventListener('click', () => launchMap(entry));
+  return card;
+}
+
+function renderLibrary() {
+  const entries = listMaps();
+  libraryTitle.textContent = libraryMode === 'host' ? 'Choose a map to host' : 'Your maps';
+  libraryNewBtn.hidden = libraryMode !== 'host';
+
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'menu-empty';
+    empty.textContent = libraryMode === 'host'
+      ? 'No saved maps yet — host a new empty map, or import one.'
+      : 'No saved maps yet — create a new map, or import one.';
+    libraryList.replaceChildren(empty);
+    return;
+  }
+  libraryList.replaceChildren(...entries.map(createLibraryCard));
+}
+
+function openLibrary(mode) {
+  libraryMode = mode;
+  renderLibrary();
+  libraryEl.hidden = false;
+}
+
+function closeLibrary() {
+  libraryEl.hidden = true;
+}
+
+document.getElementById('library-close').addEventListener('click', closeLibrary);
+libraryEl.addEventListener('click', (event) => {
+  if (event.target === libraryEl) closeLibrary();
+});
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !libraryEl.hidden) closeLibrary();
+});
+
+libraryNewBtn.addEventListener('click', () => openWorkshop({ mode: 'host' }));
+
+libraryImportBtn.addEventListener('click', () => libraryImportInput.click());
+libraryImportInput.addEventListener('change', async () => {
+  const file = libraryImportInput.files?.[0];
+  libraryImportInput.value = '';
+  if (!file) return;
+  try {
+    const map = await importMapFile(file);
+    saveMapAs({ name: file.name.replace(/\.json$/i, '') || 'Imported map', map });
+    renderLibrary();
+  } catch (error) {
+    console.error('Failed to import map:', error);
+    alert('That file is not a TowerDive map.');
+  }
 });
 
 function joinSession(session) {
@@ -98,10 +281,10 @@ function renderSessions(sessions) {
     info.className = 'menu-session-info';
     const name = document.createElement('div');
     name.className = 'menu-session-name';
-    name.textContent = `${session.name}'s map`;
+    name.textContent = session.mapName || `${session.name}'s map`;
     const meta = document.createElement('div');
     meta.className = 'menu-session-meta';
-    meta.textContent = `${session.players} player${session.players === 1 ? '' : 's'} · ${formatElapsed(session.startedAt)}`;
+    meta.textContent = `hosted by ${session.name} · ${session.players} player${session.players === 1 ? '' : 's'} · ${formatElapsed(session.startedAt)}`;
     info.append(name, meta);
     row.appendChild(info);
 

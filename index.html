@@ -42,6 +42,20 @@
         </div>
       </div>
     </div>
+    <div id="library" hidden>
+      <div id="library-panel">
+        <div id="library-header">
+          <span id="library-title">Your maps</span>
+          <button id="library-close" title="Close" aria-label="Close">&times;</button>
+        </div>
+        <div id="library-list"></div>
+        <div id="library-footer">
+          <button id="library-import">&#8681; Import map file</button>
+          <input id="library-import-input" type="file" accept="application/json" hidden />
+          <button id="library-new" hidden>&#128296; New empty map</button>
+        </div>
+      </div>
+    </div>
   </div>
   <script type="module" src="/src/main.js"></script>
   <script type="module" src="/src/menu.js"></script>

@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { spawnModel, getModelBounds, setMaxAnisotropy } from './assets.js';
 import { buildCategories, isGroundModel } from './modelCategories.js';
 import { cellToWorld, worldToCell } from './gridMath.js';
-import { createEmptyMap, loadMap, saveMap, exportMapFile, importMapFile } from './mapStore.js';
+import { createEmptyMap, getSavedMap, saveMapAs, renameMap, listMaps, exportMapFile, importMapFile } from './mapStore.js';
 import { createWalkController } from './walkController.js';
 import { createWeaponController } from './weaponController.js';
 import { TILE_SIZE } from './grid.js';
@@ -147,9 +147,20 @@ const isJoiner = netIntent.mode === 'join';
 const isHost = netIntent.mode === 'host';
 const netEnabled = isHost || isJoiner;
 
-let map = netIntent.mode === 'new' || isJoiner
-  ? createEmptyMap(15, 15, TILE_SIZE)
-  : loadMap() || createEmptyMap(15, 15, TILE_SIZE);
+// Which library slot this session edits. New maps and joined sessions have
+// no slot until the first save creates one.
+let currentMapId = null;
+let map = null;
+if (netIntent.mode !== 'new' && !isJoiner) {
+  const requestedId = netIntent.mapId
+    ?? listMaps()[0]?.id; // legacy intents without a mapId open the latest map
+  const saved = requestedId ? getSavedMap(requestedId) : null;
+  if (saved) {
+    map = saved;
+    currentMapId = requestedId;
+  }
+}
+if (!map) map = createEmptyMap(15, 15, TILE_SIZE);
 // Cell spacing is dictated by the models (1x1 tiles), not the stored map —
 // maps saved before the spacing fix carry a stale tileSize of 2.
 map.tileSize = TILE_SIZE;
@@ -1452,14 +1463,60 @@ window.addEventListener('keydown', (event) => {
 
 // --- top bar actions --------------------------------------------------------
 
-document.getElementById('action-save').addEventListener('click', () => {
-  saveMap(map);
+const mapNameInput = document.getElementById('map-name');
+const saveBtn = document.getElementById('action-save');
+{
+  const savedEntry = currentMapId ? listMaps().find((entry) => entry.id === currentMapId) : null;
+  mapNameInput.value = savedEntry?.name
+    || (isJoiner ? `${netIntent.hostName || 'host'}'s map` : '');
+}
+mapNameInput.addEventListener('change', () => {
+  if (!currentMapId) return;
+  const entry = renameMap(currentMapId, mapNameInput.value);
+  if (entry) mapNameInput.value = entry.name;
+});
+
+// Small screenshot of the current view, stored with the library entry so
+// the menu can show what each map looks like.
+function captureThumbnail() {
+  renderer.render(scene, walker.active ? exploreCamera : camera);
+  const source = renderer.domElement;
+  const thumbCanvas = document.createElement('canvas');
+  thumbCanvas.width = 240;
+  thumbCanvas.height = 135;
+  const ctx = thumbCanvas.getContext('2d');
+  const scale = Math.max(thumbCanvas.width / source.width, thumbCanvas.height / source.height);
+  const width = source.width * scale;
+  const height = source.height * scale;
+  ctx.drawImage(source, (thumbCanvas.width - width) / 2, (thumbCanvas.height - height) / 2, width, height);
+  return thumbCanvas.toDataURL('image/jpeg', 0.7);
+}
+
+let saveFlashTimer = 0;
+saveBtn.addEventListener('click', () => {
+  try {
+    const entry = saveMapAs({
+      id: currentMapId,
+      name: mapNameInput.value.trim() || 'Untitled map',
+      map,
+      thumb: captureThumbnail(),
+    });
+    currentMapId = entry.id;
+    mapNameInput.value = entry.name;
+    saveBtn.textContent = '✓ Saved';
+    clearTimeout(saveFlashTimer);
+    saveFlashTimer = setTimeout(() => {
+      saveBtn.textContent = 'Save';
+    }, 1200);
+  } catch (error) {
+    console.error('Failed to save map:', error);
+  }
 });
 
 undoBtn.addEventListener('click', () => enqueueMapEdit(undoLastEdit));
 
 document.getElementById('action-export').addEventListener('click', () => {
-  exportMapFile(map);
+  exportMapFile(map, mapNameInput.value.trim() || 'towerdive-map');
 });
 
 document.getElementById('action-import').addEventListener('click', () => importInput.click());
@@ -1691,6 +1748,7 @@ if (netEnabled) {
     if (net.isHost && !lobby) {
       lobby = announceInLobby(hostId, () => ({
         name: playerName,
+        mapName: mapNameInput.value.trim() || `${playerName}'s map`,
         players: net.peers.size + 1,
         startedAt: sessionStartedAt,
         generation: net.hostGeneration,

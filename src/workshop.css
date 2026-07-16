@@ -24,9 +24,28 @@
   opacity: 1;
 }
 
-#workshop-title {
+#map-name {
+  pointer-events: auto;
+  font: inherit;
   font-weight: 700;
   letter-spacing: 0.02em;
+  color: #e8ecf5;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 3px 8px;
+  width: 200px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+#map-name:hover {
+  border-color: rgba(232, 236, 245, 0.25);
+}
+
+#map-name:focus {
+  outline: none;
+  border-color: rgba(136, 170, 255, 0.7);
+  background: rgba(10, 14, 24, 0.6);
 }
 
 #net-status {

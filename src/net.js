@@ -104,6 +104,7 @@ export function watchLobby(onSessionsChanged) {
       hostPeerId: peerId,
       generation,
       name: String(data.name ?? 'player'),
+      mapName: String(data.mapName ?? ''),
       players: Number(data.players) || 1,
       startedAt: Number(data.startedAt) || Date.now(),
       seenAt: performance.now(),

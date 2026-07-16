@@ -9,6 +9,10 @@ browsers connect directly over WebRTC data channels, using public Nostr relays
 only for signaling and room discovery — GitHub Pages stays the only host.
 
 - **Home menu** — pick a name, then Create New Map, Load Saved Map, Host, or Join.
+- **Map library** — maps save to named slots with screenshot thumbnails;
+  the Load and Host buttons open a library panel to browse, open, rename,
+  duplicate, export, delete, and import maps. The map's name is editable in
+  the workshop top bar and is what other players see in the session list.
 - **Global presence** — hosts announce themselves in a shared lobby room; the
   menu lists live sessions with player counts and offers one-click Auto Join.
 - **Hosting** — starts in the workshop with your saved map; everyone who joins
