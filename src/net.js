@@ -11,7 +11,7 @@ const LOBBY_ROOM = 'lobby-v1';
 // peer-leave events, so presence is heartbeat-based rather than
 // join/leave-based.
 export const LOBBY_HEARTBEAT_MS = 5000;
-export const LOBBY_STALE_MS = 14000;
+export const LOBBY_STALE_MS = 20000;
 
 export { selfId };
 
@@ -68,7 +68,7 @@ export function getNetIntent() {
 export function watchLobby(onSessionsChanged) {
   const room = joinRoom({ appId: APP_ID }, LOBBY_ROOM);
   const announce = room.makeAction('announce');
-  const sessions = new Map(); // hostId -> { name, players, startedAt, seenAt }
+  const sessions = new Map(); // sessionId -> { hostPeerId, name, players, startedAt, seenAt }
 
   function emit() {
     onSessionsChanged([...sessions.entries()].map(([hostId, info]) => ({ hostId, ...info })));
@@ -76,9 +76,9 @@ export function watchLobby(onSessionsChanged) {
 
   function prune() {
     let changed = false;
-    for (const [hostId, info] of sessions) {
+    for (const [sessionId, info] of sessions) {
       if (performance.now() - info.seenAt > LOBBY_STALE_MS) {
-        sessions.delete(hostId);
+        sessions.delete(sessionId);
         changed = true;
       }
     }
@@ -87,7 +87,22 @@ export function watchLobby(onSessionsChanged) {
 
   announce.onMessage = (data, { peerId }) => {
     if (!data || typeof data !== 'object') return;
-    sessions.set(peerId, {
+    const sessionId = String(data.sessionId || peerId);
+    const current = sessions.get(sessionId);
+    if (data.active === false) {
+      if (
+        current?.hostPeerId === peerId
+        && Number(data.generation || 0) >= current.generation
+        && sessions.delete(sessionId)
+      ) emit();
+      return;
+    }
+    const generation = Number(data.generation) || 0;
+    if (current && generation < current.generation) return;
+    if (current && generation === current.generation && current.hostPeerId < peerId) return;
+    sessions.set(sessionId, {
+      hostPeerId: peerId,
+      generation,
       name: String(data.name ?? 'player'),
       players: Number(data.players) || 1,
       startedAt: Number(data.startedAt) || Date.now(),
@@ -97,7 +112,14 @@ export function watchLobby(onSessionsChanged) {
   };
 
   room.onPeerLeave = (peerId) => {
-    if (sessions.delete(peerId)) emit();
+    let changed = false;
+    for (const [sessionId, info] of sessions) {
+      if (info.hostPeerId === peerId) {
+        sessions.delete(sessionId);
+        changed = true;
+      }
+    }
+    if (changed) emit();
   };
 
   const pruneTimer = setInterval(prune, 2000);
@@ -110,12 +132,15 @@ export function watchLobby(onSessionsChanged) {
   };
 }
 
-export function announceInLobby(getInfo) {
+export function announceInLobby(sessionId, getInfo) {
   const room = joinRoom({ appId: APP_ID }, LOBBY_ROOM);
   const announce = room.makeAction('announce');
 
   const send = (target) => {
-    announce.send(getInfo(), target ? { target } : undefined).catch(() => {});
+    announce.send(
+      { ...getInfo(), sessionId, active: true },
+      target ? { target } : undefined
+    ).catch(() => {});
   };
 
   // Broadcast on a heartbeat and directly to freshly-arrived browsers so a
@@ -128,6 +153,12 @@ export function announceInLobby(getInfo) {
     update: () => send(),
     leave() {
       clearInterval(heartbeat);
+      const info = getInfo();
+      announce.send({
+        sessionId,
+        active: false,
+        generation: Number(info.generation) || 0,
+      }).catch(() => {});
       room.leave();
     },
   };
@@ -146,7 +177,7 @@ export function announceInLobby(getInfo) {
 //   shot  — fire events so everyone sees tracers/impacts
 //   hello — name introduction, sent to each newly-connected peer
 //   dm    — deathmatch events: hits, deaths, and referee match control
-export function createGameSession({ hostId, isHost, playerName, handlers = {} }) {
+export function createGameSession({ hostId, playerName, ready = true, handlers = {} }) {
   const room = joinRoom({ appId: APP_ID }, `game-${hostId}`);
   const mapAction = room.makeAction('map');
   const opAction = room.makeAction('op');
@@ -154,26 +185,124 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
   const shotAction = room.makeAction('shot');
   const helloAction = room.makeAction('hello');
   const dmAction = room.makeAction('dm');
+  const authorityAction = room.makeAction('authority');
+  const presenceAction = room.makeAction('presence');
 
-  const peers = new Map(); // peerId -> { name }
+  const peers = new Map(); // peerId -> { name, seenAt }
+  let currentHostId = hostId;
+  let hostGeneration = 0;
+  let selfReady = ready;
+
+  function notifyHostChanged() {
+    handlers.onHostChanged?.(currentHostId);
+  }
+
+  function setCurrentHost(nextHostId, generation = hostGeneration) {
+    if (currentHostId === nextHostId && hostGeneration === generation) return;
+    currentHostId = nextHostId;
+    hostGeneration = generation;
+    notifyHostChanged();
+    if (currentHostId === selfId) {
+      authorityAction.send({ hostId: selfId, generation: hostGeneration }).catch(() => {});
+    }
+  }
+
+  function readyCandidates() {
+    const candidates = [];
+    if (selfReady) candidates.push(selfId);
+    for (const [peerId, peer] of peers) {
+      if (peer.ready) candidates.push(peerId);
+    }
+    return candidates.sort();
+  }
+
+  function reconcileHost() {
+    const currentIsReady = currentHostId === selfId
+      ? selfReady
+      : peers.get(currentHostId)?.ready;
+    if (currentIsReady) return;
+    // A newcomer without a map must learn the established migrated authority;
+    // it cannot safely invent the next generation from partial peer knowledge.
+    if (!selfReady && hostGeneration === 0 && currentHostId === hostId) return;
+
+    const candidates = readyCandidates();
+    if (hostGeneration === 0 && peers.get(hostId)?.ready) {
+      setCurrentHost(hostId, 0);
+      return;
+    }
+    const nextGeneration = currentHostId ? hostGeneration + 1 : hostGeneration;
+    setCurrentHost(candidates[0] || null, nextGeneration);
+  }
+
+  function touchPeer(peerId, name, peerReady) {
+    const existing = peers.get(peerId);
+    peers.set(peerId, {
+      name: name ?? existing?.name ?? null,
+      ready: peerReady ?? existing?.ready ?? false,
+      seenAt: performance.now(),
+    });
+  }
 
   helloAction.onMessage = (data, { peerId }) => {
-    peers.set(peerId, { name: String(data?.name ?? 'player').slice(0, 24) });
+    touchPeer(peerId, String(data?.name ?? 'player').slice(0, 24), data?.ready === true);
+    reconcileHost();
     handlers.onPeersChanged?.();
   };
 
   room.onPeerJoin = (peerId) => {
-    if (!peers.has(peerId)) peers.set(peerId, { name: null });
-    helloAction.send({ name: playerName }, { target: peerId }).catch(() => {});
-    if (isHost) handlers.onPeerNeedsMap?.(peerId);
+    touchPeer(peerId);
+    helloAction.send({ name: playerName, ready: selfReady }, { target: peerId }).catch(() => {});
+    authorityAction.send(
+      { hostId: currentHostId, generation: hostGeneration },
+      { target: peerId }
+    ).catch(() => {});
+    if (currentHostId === selfId) handlers.onPeerNeedsMap?.(peerId);
     handlers.onPeersChanged?.();
   };
 
-  room.onPeerLeave = (peerId) => {
-    peers.delete(peerId);
+  function removePeer(peerId) {
+    if (!peers.delete(peerId)) return;
     handlers.onPeerLeft?.(peerId);
+    if (peerId === currentHostId) reconcileHost();
     handlers.onPeersChanged?.();
+  }
+
+  room.onPeerLeave = removePeer;
+
+  authorityAction.onMessage = (data, { peerId }) => {
+    touchPeer(peerId);
+    const proposedHostId = String(data?.hostId || '');
+    const proposedGeneration = Number(data?.generation) || 0;
+    const proposedReady = proposedHostId === selfId
+      ? selfReady
+      : peers.get(proposedHostId)?.ready;
+    if (!proposedHostId || !proposedReady) return;
+    if (
+      proposedGeneration > hostGeneration
+      || (proposedGeneration === hostGeneration && (!currentHostId || proposedHostId < currentHostId))
+    ) {
+      setCurrentHost(proposedHostId, proposedGeneration);
+    }
+    reconcileHost();
   };
+
+  presenceAction.onMessage = (data, { peerId }) => {
+    const isNew = !peers.has(peerId);
+    touchPeer(peerId, undefined, data?.ready === true);
+    reconcileHost();
+    if (isNew) handlers.onPeersChanged?.();
+  };
+
+  const presenceTimer = setInterval(() => {
+    presenceAction.send({ at: Date.now(), ready: selfReady }).catch(() => {});
+    if (currentHostId === selfId) {
+      authorityAction.send({ hostId: selfId, generation: hostGeneration }).catch(() => {});
+    }
+    for (const [peerId, peer] of peers) {
+      if (performance.now() - peer.seenAt > LOBBY_STALE_MS * 2) removePeer(peerId);
+    }
+    reconcileHost();
+  }, LOBBY_HEARTBEAT_MS);
 
   mapAction.onMessage = (map, { peerId }) => handlers.onMap?.(map, peerId);
   opAction.onMessage = (op, { peerId }) => handlers.onOp?.(op, peerId);
@@ -184,6 +313,20 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
   return {
     selfId,
     peers,
+    get currentHostId() {
+      return currentHostId;
+    },
+    get isHost() {
+      return currentHostId === selfId;
+    },
+    get hostGeneration() {
+      return hostGeneration;
+    },
+    setReady(value) {
+      selfReady = Boolean(value);
+      presenceAction.send({ at: Date.now(), ready: selfReady }).catch(() => {});
+      reconcileHost();
+    },
     peerName(peerId) {
       return peers.get(peerId)?.name || 'player';
     },
@@ -192,6 +335,9 @@ export function createGameSession({ hostId, isHost, playerName, handlers = {} })
     sendState: (state) => stateAction.send(state).catch(() => {}),
     sendShot: (shot) => shotAction.send(shot).catch(() => {}),
     sendDm: (event) => dmAction.send(event).catch(() => {}),
-    leave: () => room.leave(),
+    leave() {
+      clearInterval(presenceTimer);
+      room.leave();
+    },
   };
 }

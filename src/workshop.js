@@ -1334,10 +1334,18 @@ let lobby = null;
 let remotePlayers = null;
 let dm = null;
 let mapSynced = !isJoiner; // joiners wait for the host's map before edits count
-const sessionStartedAt = Date.now();
+let mapSyncSourceId = null;
+let pendingSyncOps = [];
+let mapSyncToken = 0;
+let localOpSequence = 0;
+let opClock = {};
+const sessionStartedAt = Number(netIntent.startedAt) || Date.now();
 
 function broadcastOp(op) {
-  if (net && mapSynced) net.sendOp(op);
+  if (!net || !mapSynced) return;
+  localOpSequence += 1;
+  opClock[selfId] = localOpSequence;
+  net.sendOp({ origin: selfId, sequence: localOpSequence, op });
 }
 
 function findEntity(id) {
@@ -1428,6 +1436,24 @@ async function applyRemoteOp(op) {
   }
 }
 
+async function applyNetworkOp(message) {
+  if (
+    message
+    && typeof message === 'object'
+    && typeof message.origin === 'string'
+    && Number.isSafeInteger(message.sequence)
+    && message.sequence > 0
+    && message.op
+  ) {
+    if (message.sequence <= (opClock[message.origin] || 0)) return;
+    await applyRemoteOp(message.op);
+    opClock[message.origin] = message.sequence;
+    return;
+  }
+  // Compatibility with peers that connected during a rolling deployment.
+  await applyRemoteOp(message);
+}
+
 function updateNetStatus() {
   if (!netEnabled) return;
   netStatusEl.hidden = false;
@@ -1440,15 +1466,41 @@ function updateNetStatus() {
   const names = net
     ? [...net.peers.values()].map((peer) => peer.name).filter(Boolean).join(', ')
     : '';
-  netStatusEl.textContent = isHost
+  const currentHostName = net?.isHost
+    ? getPlayerName() || 'player'
+    : net?.peerName(net?.currentHostId) || netIntent.hostName || 'host';
+  netStatusEl.textContent = net?.isHost
     ? `\u{1F4E1} Hosting · ${count} player${count === 1 ? '' : 's'}`
-    : `\u{1F517} ${netIntent.hostName || 'host'}'s session · ${count} player${count === 1 ? '' : 's'}`;
+    : `\u{1F517} ${currentHostName}'s session · ${count} player${count === 1 ? '' : 's'}`;
   netStatusEl.title = names ? `Also here: ${names}` : 'No one else here yet';
 }
 
 if (netEnabled) {
   const playerName = getPlayerName() || 'player';
   const hostId = isHost ? selfId : netIntent.hostId;
+
+  function syncHostRole() {
+    if (!net) return;
+    if (net.isHost && !lobby) {
+      lobby = announceInLobby(hostId, () => ({
+        name: playerName,
+        players: net.peers.size + 1,
+        startedAt: sessionStartedAt,
+        generation: net.hostGeneration,
+      }));
+      if (mapSynced) {
+        enqueueMapEdit(() => net.sendMap({
+          map: cloneMap(map),
+          sky: skyboxSelect.value,
+          opClock: { ...opClock },
+        }));
+      }
+    } else if (!net.isHost && lobby) {
+      lobby.leave();
+      lobby = null;
+    }
+    updateNetStatus();
+  }
 
   remotePlayers = createRemotePlayers({
     scene,
@@ -1458,39 +1510,70 @@ if (netEnabled) {
 
   net = createGameSession({
     hostId,
-    isHost,
     playerName,
+    ready: !isJoiner,
     handlers: {
       // Host answers each newcomer with a consistent snapshot; taking it
       // through the edit queue guarantees no half-applied operation is
       // captured mid-flight.
       onPeerNeedsMap(peerId) {
         enqueueMapEdit(() => {
-          net.sendMap({ map: cloneMap(map), sky: skyboxSelect.value }, peerId);
+          net.sendMap({
+            map: cloneMap(map),
+            sky: skyboxSelect.value,
+            opClock: { ...opClock },
+          }, peerId);
         });
       },
       onMap(data, peerId) {
-        if (!isJoiner || mapSynced || peerId !== netIntent.hostId) return;
+        if (!isJoiner || mapSynced || peerId !== net.currentHostId) return;
         if (data?.map?.version !== 1) return;
+        const syncToken = ++mapSyncToken;
+        const hostGeneration = net.hostGeneration;
+        mapSyncSourceId = peerId;
         enqueueMapEdit(async () => {
+          if (
+            mapSynced
+            || peerId !== net.currentHostId
+            || mapSyncSourceId !== peerId
+            || hostGeneration !== net.hostGeneration
+            || syncToken !== mapSyncToken
+          ) return;
           map = data.map;
           map.tileSize = TILE_SIZE;
+          opClock = data.opClock && typeof data.opClock === 'object' ? { ...data.opClock } : {};
+          localOpSequence = Math.max(localOpSequence, opClock[selfId] || 0);
           mapRevision += 1;
-          mapSynced = true;
           clearEntitySelection();
           if (SKYBOXES.includes(data.sky)) {
             skyboxSelect.value = data.sky;
             applySkybox(scene, data.sky);
           }
           await loadEntireMap();
+          if (
+            peerId !== net.currentHostId
+            || mapSyncSourceId !== peerId
+            || hostGeneration !== net.hostGeneration
+            || syncToken !== mapSyncToken
+          ) return;
+          while (pendingSyncOps.length > 0) {
+            const ops = pendingSyncOps.splice(0);
+            for (const op of ops) await applyNetworkOp(op);
+          }
+          mapSynced = true;
+          mapSyncSourceId = null;
+          net.setReady(true);
           updateNetStatus();
         });
       },
       // Ops arriving before the initial snapshot are dropped: everything the
       // host did up to the snapshot is already inside it.
       onOp(op) {
-        if (!mapSynced) return;
-        enqueueMapEdit(() => applyRemoteOp(op));
+        if (!mapSynced) {
+          pendingSyncOps.push(op);
+          return;
+        }
+        enqueueMapEdit(() => applyNetworkOp(op));
       },
       onState(state, peerId) {
         remotePlayers.pushState(peerId, state);
@@ -1512,6 +1595,13 @@ if (netEnabled) {
         }
         updateNetStatus();
         lobby?.update();
+      },
+      onHostChanged() {
+        if (!mapSynced) {
+          mapSyncToken += 1;
+          mapSyncSourceId = null;
+        }
+        syncHostRole();
       },
     },
   });
@@ -1536,20 +1626,22 @@ if (netEnabled) {
   });
   weaponTargets.push(remotePlayers.avatarsGroup);
 
-  if (isHost) {
-    lobby = announceInLobby(() => ({
-      name: playerName,
-      players: net.peers.size + 1,
-      startedAt: sessionStartedAt,
-    }));
-  }
+  syncHostRole();
 
   updateNetStatus();
   updateUndoButton();
 
-  window.addEventListener('pagehide', () => {
+  let networkClosed = false;
+  function closeNetworkSession() {
+    if (networkClosed) return;
+    networkClosed = true;
     lobby?.leave();
     net.leave();
+  }
+  window.addEventListener('pagehide', closeNetworkSession);
+  window.addEventListener('beforeunload', closeNetworkSession);
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted && networkClosed) window.location.reload();
   });
 }
 

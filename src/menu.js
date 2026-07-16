@@ -53,7 +53,12 @@ hostBtn.addEventListener('click', () => {
 
 function joinSession(session) {
   if (!requireName()) return;
-  openWorkshop({ mode: 'join', hostId: session.hostId, hostName: session.name });
+  openWorkshop({
+    mode: 'join',
+    hostId: session.hostId,
+    hostName: session.name,
+    startedAt: session.startedAt,
+  });
 }
 
 // --- global presence ----------------------------------------------------
