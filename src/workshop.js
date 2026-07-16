@@ -148,10 +148,10 @@ function rebuildIndex() {
   }
 }
 
-function getVerticalBounds(bounds, mirrorY = false) {
-  return mirrorY
-    ? { minY: -bounds.maxY, maxY: -bounds.minY, height: bounds.height }
-    : bounds;
+function getVerticalBounds(bounds, mirrorY = false, scale = 1) {
+  const minY = (mirrorY ? -bounds.maxY : bounds.minY) * scale;
+  const maxY = (mirrorY ? -bounds.minY : bounds.maxY) * scale;
+  return { minY, maxY, height: bounds.height * scale };
 }
 
 async function layoutCellStack(col, row) {
@@ -161,7 +161,7 @@ async function layoutCellStack(col, row) {
   let top = 0;
   let legacyMaxStep = -1;
   props.forEach((entity, index) => {
-    const verticalBounds = getVerticalBounds(bounds[index], entity.mirrorY);
+    const verticalBounds = getVerticalBounds(bounds[index], entity.mirrorY, entity.scale ?? 1);
     const savedStep = entity.heightStep ?? legacyMaxStep + 1;
     if (entity.stackOffset === undefined) {
       entity.stackOffset = savedStep - (legacyMaxStep + 1);
@@ -191,7 +191,7 @@ function getPendingStackY(col, row, modelHeight) {
 async function renderEntity(entity, generation = renderGeneration) {
   const { x, z } = cellToWorld(entity.col, entity.row, map.width, map.depth, TILE_SIZE);
   const bounds = entity.ground
-    ? getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY)
+    ? getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY, entity.scale ?? 1)
     : null;
   const y = entity.ground ? -bounds.maxY : (entity.stackY ?? 0);
   const object = await spawnModel(entity.name, {
@@ -200,6 +200,7 @@ async function renderEntity(entity, generation = renderGeneration) {
     mirrorX: entity.mirrorX,
     mirrorY: entity.mirrorY,
     mirrorZ: entity.mirrorZ,
+    scale: entity.scale ?? 1,
   });
   if (generation !== renderGeneration || !map.entities.includes(entity)) return;
   object.userData.entityId = entity.id;
@@ -302,6 +303,7 @@ let currentBrush = null;
 let pendingRotation = 0;
 let pendingHeight = 0;
 let pendingMirrors = { x: false, y: false, z: false };
+let pendingScale = 1;
 let selectedEntityId = null;
 let moveEntityId = null;
 let copyMode = false;
@@ -339,7 +341,7 @@ function updateBrushStatus() {
     brushDetailEl.textContent = 'click destination · Esc cancel';
   } else if (!currentBrush && selectedEntity) {
     brushNameEl.textContent = `selected: ${selectedEntity.name}`;
-    brushDetailEl.textContent = `Del delete · C copy · M move · [ ] height${selectedMirrors.length ? ` · mirror ${selectedMirrors.join('/')}` : ''}`;
+    brushDetailEl.textContent = `scale ${(selectedEntity.scale ?? 1).toFixed(2)}x · Del delete · C copy · M move · [ ] height${selectedMirrors.length ? ` · mirror ${selectedMirrors.join('/')}` : ''}`;
   } else if (!currentBrush) {
     brushNameEl.textContent = 'no tool selected';
     brushDetailEl.textContent = '';
@@ -349,7 +351,7 @@ function updateBrushStatus() {
   } else {
     brushNameEl.textContent = currentBrush;
     const offset = pendingHeight === 0 ? 'auto-stack' : `auto-stack ${pendingHeight > 0 ? '+' : ''}${pendingHeight}`;
-    brushDetailEl.textContent = `${copyMode ? 'copy · ' : ''}rot ${pendingRotation * 90}° · ${offset}${brushMirrors.length ? ` · mirror ${brushMirrors.join('/')}` : ''}`;
+    brushDetailEl.textContent = `${copyMode ? 'copy · ' : ''}scale ${pendingScale.toFixed(2)}x · rot ${pendingRotation * 90}° · ${offset}${brushMirrors.length ? ` · mirror ${brushMirrors.join('/')}` : ''}`;
   }
 }
 
@@ -362,6 +364,7 @@ function selectBrush(name) {
   pendingRotation = 0;
   pendingHeight = 0;
   pendingMirrors = { x: false, y: false, z: false };
+  pendingScale = 1;
   document.querySelectorAll('.palette-item.selected').forEach((el) => el.classList.remove('selected'));
   document.querySelectorAll('.quickbar-item.selected').forEach((el) => el.classList.remove('selected'));
   document.querySelectorAll(`[data-name="${CSS.escape(name)}"]`).forEach((el) => el.classList.add('selected'));
@@ -402,6 +405,7 @@ function copySelectedEntity() {
     y: Boolean(entity.mirrorY),
     z: Boolean(entity.mirrorZ),
   };
+  pendingScale = entity.scale ?? 1;
   copyMode = true;
   syncGhostTransform();
   updateBrushStatus();
@@ -661,17 +665,18 @@ function syncGhostTransform() {
   ghostObject.visible = true;
   const verticalBounds = getVerticalBounds(
     { minY: ghostMinY, maxY: ghostMaxY, height: ghostHeight },
-    pendingMirrors.y
+    pendingMirrors.y,
+    pendingScale
   );
   const y = isGroundModel(currentBrush)
     ? -verticalBounds.maxY
-    : getPendingStackY(hoverCell.col, hoverCell.row, ghostHeight) - verticalBounds.minY;
+    : getPendingStackY(hoverCell.col, hoverCell.row, verticalBounds.height) - verticalBounds.minY;
   ghostObject.position.set(x, y, z);
   ghostObject.rotation.y = pendingRotation * (Math.PI / 2);
   ghostObject.scale.set(
-    pendingMirrors.x ? -1 : 1,
-    pendingMirrors.y ? -1 : 1,
-    pendingMirrors.z ? -1 : 1
+    pendingScale * (pendingMirrors.x ? -1 : 1),
+    pendingScale * (pendingMirrors.y ? -1 : 1),
+    pendingScale * (pendingMirrors.z ? -1 : 1)
   );
 }
 
@@ -747,14 +752,15 @@ function getEntityIdFromIntersection(intersection) {
   return null;
 }
 
-function updateHover(clientX, clientY) {
+function updateHover(clientX, clientY, ignoredEntityId = null) {
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(
     ((clientX - rect.left) / rect.width) * 2 - 1,
     -((clientY - rect.top) / rect.height) * 2 + 1
   );
   raycaster.setFromCamera(ndc, camera);
-  const entityHit = raycaster.intersectObject(mapGroup, true)[0];
+  const entityHit = raycaster.intersectObject(mapGroup, true)
+    .find((hit) => getEntityIdFromIntersection(hit) !== ignoredEntityId);
   hoverEntityId = getEntityIdFromIntersection(entityHit);
   const hoverEntity = map.entities.find((entity) => entity.id === hoverEntityId);
   const hoverObject = objectsById.get(hoverEntityId);
@@ -795,7 +801,7 @@ function updateHover(clientX, clientY) {
 
 // --- placing / erasing ------------------------------------------------------
 
-async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
+async function placeEntity({ cell, brush, rotation, heightOffset, mirrors, scale }) {
   if (!cell || !brush || brush === ERASE) return;
   recordUndoState();
   const { col, row } = cell;
@@ -814,11 +820,12 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
       mirrorX: mirrors.x,
       mirrorY: mirrors.y,
       mirrorZ: mirrors.z,
+      scale,
     });
   } else {
     const bounds = await getModelBounds(brush);
-    const verticalBounds = getVerticalBounds(bounds, mirrors.y);
-    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * bounds.height;
+    const verticalBounds = getVerticalBounds(bounds, mirrors.y, scale);
+    const baseY = (cellStackTops.get(cellKey(col, row)) || 0) + heightOffset * verticalBounds.height;
     placed = addEntity({
       name: brush,
       ground: false,
@@ -831,6 +838,7 @@ async function placeEntity({ cell, brush, rotation, heightOffset, mirrors }) {
       mirrorX: mirrors.x,
       mirrorY: mirrors.y,
       mirrorZ: mirrors.z,
+      scale,
     });
     await layoutCellStack(col, row);
   }
@@ -914,12 +922,41 @@ async function toggleMirrorCore(entity, axis) {
   const object = objectsById.get(entity.id);
   if (object) object.scale[axis] *= -1;
   if (entity.ground) {
-    const bounds = getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY);
+    const bounds = getVerticalBounds(
+      await getModelBounds(entity.name),
+      entity.mirrorY,
+      entity.scale ?? 1
+    );
     if (object) object.position.y = -bounds.maxY;
   } else {
     await layoutCellStack(entity.col, entity.row);
   }
   mapRevision += 1;
+}
+
+async function setEntityScaleCore(entity, scale) {
+  entity.scale = THREE.MathUtils.clamp(scale, 0.25, 4);
+  const object = objectsById.get(entity.id);
+  if (object) {
+    object.scale.set(
+      entity.scale * (entity.mirrorX ? -1 : 1),
+      entity.scale * (entity.mirrorY ? -1 : 1),
+      entity.scale * (entity.mirrorZ ? -1 : 1)
+    );
+  }
+  if (entity.ground) {
+    const bounds = getVerticalBounds(await getModelBounds(entity.name), entity.mirrorY, entity.scale);
+    if (object) object.position.y = -bounds.maxY;
+  } else {
+    await layoutCellStack(entity.col, entity.row);
+  }
+  mapRevision += 1;
+}
+
+async function adjustEntityScaleCore(entity, delta) {
+  entity.scaleValue = (entity.scaleValue ?? entity.scale ?? 1) + delta;
+  await setEntityScaleCore(entity, entity.scaleValue);
+  return true;
 }
 
 async function moveSelectedEntity({ entityId, cell }) {
@@ -959,19 +996,145 @@ async function toggleSelectedMirror(entityId, axis) {
   updateBrushStatus();
 }
 
+async function scaleSelectedEntity(entityId, delta) {
+  const entity = map.entities.find((candidate) => candidate.id === entityId);
+  if (!entity) return;
+  const nextScale = THREE.MathUtils.clamp((entity.scale ?? 1) + delta, 0.25, 4);
+  if (nextScale === (entity.scale ?? 1)) return;
+  recordUndoState();
+  await adjustEntityScaleCore(entity, delta);
+  broadcastOp({ t: 'scale', id: entity.id, delta });
+  updateSelectionOutline();
+  updateBrushStatus();
+}
+
+function scaleBrush(delta) {
+  pendingScale = THREE.MathUtils.clamp(pendingScale + delta, 0.25, 4);
+  syncGhostTransform();
+  updateBrushStatus();
+}
+
 function toggleBrushMirror(axis) {
   pendingMirrors[axis] = !pendingMirrors[axis];
   syncGhostTransform();
   updateBrushStatus();
 }
 
+let dragCandidate = null;
+let suppressNextClick = false;
+
+function restoreDraggedObject(candidate) {
+  const object = objectsById.get(candidate?.entityId);
+  if (object) {
+    object.position.x = candidate.originX;
+    object.position.y = candidate.originY;
+    object.position.z = candidate.originZ;
+  }
+  updateSelectionOutline();
+}
+
+canvas.addEventListener('pointerdown', (event) => {
+  if (walker.active || event.button !== 0 || currentBrush || moveEntityId !== null) return;
+  updateHover(event.clientX, event.clientY);
+  if (hoverEntityId === null || hoverEntityId !== selectedEntityId) return;
+  const object = objectsById.get(selectedEntityId);
+  const entity = map.entities.find((candidate) => candidate.id === selectedEntityId);
+  if (!object || !entity) return;
+  dragCandidate = {
+    pointerId: event.pointerId,
+    entityId: selectedEntityId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: object.position.x,
+    originY: object.position.y,
+    originZ: object.position.z,
+    sourceCol: entity.col,
+    sourceRow: entity.row,
+    ground: entity.ground,
+    bounds: getModelBounds(entity.name).then((modelBounds) =>
+      getVerticalBounds(modelBounds, entity.mirrorY, entity.scale ?? 1)
+    ),
+    dragging: false,
+  };
+  canvas.setPointerCapture(event.pointerId);
+});
+
 canvas.addEventListener('pointermove', (event) => {
   if (walker.active) return;
+  if (dragCandidate?.pointerId === event.pointerId) {
+    if (!dragCandidate.dragging) {
+      const distance = Math.hypot(
+        event.clientX - dragCandidate.startX,
+        event.clientY - dragCandidate.startY
+      );
+      if (distance >= 5) {
+        dragCandidate.dragging = true;
+        canvas.setPointerCapture(event.pointerId);
+        controls.enabled = false;
+      }
+    }
+    if (dragCandidate.dragging) {
+      updateHover(event.clientX, event.clientY, dragCandidate.entityId);
+      const object = objectsById.get(dragCandidate.entityId);
+      if (object && hoverCell) {
+        const activeDrag = dragCandidate;
+        const previewCell = { ...hoverCell };
+        const { x, z } = cellToWorld(previewCell.col, previewCell.row, map.width, map.depth, TILE_SIZE);
+        object.position.x = x;
+        object.position.z = z;
+        updateSelectionOutline();
+        activeDrag.bounds.then((bounds) => {
+          if (dragCandidate !== activeDrag) return;
+          if (hoverCell?.col !== previewCell.col || hoverCell?.row !== previewCell.row) return;
+          if (previewCell.col === activeDrag.sourceCol && previewCell.row === activeDrag.sourceRow) {
+            object.position.y = activeDrag.originY;
+          } else {
+            const stackTop = cellStackTops.get(cellKey(previewCell.col, previewCell.row)) || 0;
+            object.position.y = activeDrag.ground ? -bounds.maxY : stackTop - bounds.minY;
+          }
+          updateSelectionOutline();
+        });
+      }
+      return;
+    }
+  }
   updateHover(event.clientX, event.clientY);
+});
+
+canvas.addEventListener('pointerup', (event) => {
+  if (dragCandidate?.pointerId !== event.pointerId) return;
+  const candidate = dragCandidate;
+  dragCandidate = null;
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  if (!candidate.dragging) return;
+  suppressNextClick = true;
+  setTimeout(() => {
+    suppressNextClick = false;
+  }, 0);
+  controls.enabled = true;
+  const cell = hoverCell ? { ...hoverCell } : null;
+  if (!cell) {
+    restoreDraggedObject(candidate);
+    return;
+  }
+  enqueueMapEdit(() => moveSelectedEntity({ entityId: candidate.entityId, cell }));
+});
+
+canvas.addEventListener('pointercancel', (event) => {
+  if (dragCandidate?.pointerId !== event.pointerId) return;
+  const candidate = dragCandidate;
+  dragCandidate = null;
+  controls.enabled = true;
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  restoreDraggedObject(candidate);
 });
 
 canvas.addEventListener('click', (event) => {
   if (walker.active) return;
+  if (suppressNextClick) {
+    suppressNextClick = false;
+    return;
+  }
   updateHover(event.clientX, event.clientY);
   const cell = hoverCell ? { ...hoverCell } : null;
   if (moveEntityId !== null) {
@@ -989,6 +1152,7 @@ canvas.addEventListener('click', (event) => {
       rotation: pendingRotation,
       heightOffset: pendingHeight,
       mirrors: { ...pendingMirrors },
+      scale: pendingScale,
     };
     enqueueMapEdit(() => placeEntity(request));
   }
@@ -1017,6 +1181,20 @@ window.addEventListener('keydown', (event) => {
       enqueueMapEdit(() => toggleSelectedMirror(entityId, mirrorAxis));
     } else if (currentBrush && currentBrush !== ERASE) {
       toggleBrushMirror(mirrorAxis);
+    }
+    return;
+  }
+  const scaleDelta = ['+', '='].includes(event.key)
+    ? 0.25
+    : ['-', '_'].includes(event.key) ? -0.25 : 0;
+  if (scaleDelta !== 0) {
+    if (selectedEntityId !== null && !currentBrush) {
+      event.preventDefault();
+      const entityId = selectedEntityId;
+      enqueueMapEdit(() => scaleSelectedEntity(entityId, scaleDelta));
+    } else if (currentBrush && currentBrush !== ERASE) {
+      event.preventDefault();
+      scaleBrush(scaleDelta);
     }
     return;
   }
@@ -1214,6 +1392,14 @@ async function applyRemoteOp(op) {
       if (!entity || !['x', 'y', 'z'].includes(op.axis)) return;
       await toggleMirrorCore(entity, op.axis);
       updateSelectionOutline();
+      return;
+    }
+    case 'scale': {
+      const entity = findEntity(op.id);
+      if (!entity || !Number.isFinite(op.delta) || Math.abs(op.delta) > 1) return;
+      await adjustEntityScaleCore(entity, op.delta);
+      updateSelectionOutline();
+      updateBrushStatus();
       return;
     }
     case 'clear': {
