@@ -1,7 +1,8 @@
-import { TextureLoader, EquirectangularReflectionMapping, SRGBColorSpace } from 'three';
+import { TextureLoader, EquirectangularReflectionMapping, SRGBColorSpace, UVMapping } from 'three';
 
 const loader = new TextureLoader();
 const cache = new Map();
+const surfaceCache = new Map();
 
 export const SKYBOXES = ['day', 'morning', 'night', 'alien', 'space'];
 
@@ -30,4 +31,16 @@ export async function applySkybox(scene, name) {
   const texture = await loadSkybox(name);
   scene.background = texture;
   return texture;
+}
+
+export function loadSkyboxSurface(name) {
+  if (surfaceCache.has(name)) return surfaceCache.get(name);
+  const promise = loadSkybox(name).then((sourceTexture) => {
+    const texture = sourceTexture.clone();
+    texture.mapping = UVMapping;
+    texture.needsUpdate = true;
+    return texture;
+  });
+  surfaceCache.set(name, promise);
+  return promise;
 }
