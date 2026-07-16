@@ -70,6 +70,16 @@ export function createWalkController({ camera, canvas }) {
   const wallNormal = new THREE.Vector3();
   const mantleFrom = new THREE.Vector3();
   const mantleTo = new THREE.Vector3();
+  const clearanceDirs = [
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(-1, 0, 0),
+    new THREE.Vector3(0, 0, 1),
+    new THREE.Vector3(0, 0, -1),
+    new THREE.Vector3(Math.SQRT1_2, 0, Math.SQRT1_2),
+    new THREE.Vector3(-Math.SQRT1_2, 0, Math.SQRT1_2),
+    new THREE.Vector3(Math.SQRT1_2, 0, -Math.SQRT1_2),
+    new THREE.Vector3(-Math.SQRT1_2, 0, -Math.SQRT1_2),
+  ];
 
   function onKeyDown(event) {
     event.preventDefault();
@@ -145,6 +155,34 @@ export function createWalkController({ camera, canvas }) {
     return closest;
   }
 
+  // Mantle landings must have enough horizontal room for the player's body;
+  // otherwise stacked or adjacent props can pull the camera inside geometry.
+  function hasBodyClearance(x, z, feetY, clearanceRadius = config.collisionRadius) {
+    const bodyTop = feetY + eyeHeight * 0.95;
+    const heights = [
+      feetY + config.stepHeight * 1.1,
+      feetY + eyeHeight * 0.5,
+      bodyTop,
+    ].filter((height, index, all) =>
+      height > feetY + 1e-4 && (index === 0 || Math.abs(height - all[index - 1]) > 1e-4),
+    );
+
+    for (const originY of heights) {
+      for (const dir of clearanceDirs) {
+        probeOrigin.set(x, originY, z);
+        raycaster.set(probeOrigin, dir);
+        raycaster.far = clearanceRadius;
+        for (const hit of raycaster.intersectObject(target, true)) {
+          if (!hit.face) continue;
+          wallNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+          if (Math.abs(wallNormal.y) >= config.slopeLimit) continue;
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   // Collide-and-slide: clip the frame's horizontal displacement against
   // walls, redirecting the blocked remainder along the wall plane (second
   // pass handles corners). Also bleeds off the into-wall velocity so speed
@@ -200,19 +238,23 @@ export function createWalkController({ camera, canvas }) {
     let landX = 0;
     let landZ = 0;
     let ledgeY = null;
+    let blockedByClearance = false;
     for (const depth of [2, 1.2, 0.5, 0.12]) {
       landX = wallHit.point.x - wallHit.nx * config.collisionRadius * depth;
       landZ = wallHit.point.z - wallHit.nz * config.collisionRadius * depth;
       const ledge = findSurface(landX, landZ, probeTop, config.mantleHeight + eyeHeight);
       if (!ledge) continue;
       const y = ledge.point.y;
-      if (y > feetY + config.stepHeight && y <= feetY + config.mantleHeight) {
-        ledgeY = y;
-        break;
+      if (y <= feetY + config.stepHeight || y > feetY + config.mantleHeight) continue;
+      if (!hasBodyClearance(landX, landZ, y)) {
+        blockedByClearance = true;
+        continue;
       }
+      ledgeY = y;
+      break;
     }
     if (ledgeY === null) {
-      mantleDebug = 'no-ledge';
+      mantleDebug = blockedByClearance ? 'blocked-ledge' : 'no-ledge';
       return false;
     }
     mantleDebug = 'started';
